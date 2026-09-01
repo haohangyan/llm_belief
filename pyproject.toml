@@ -10,7 +10,6 @@ dependencies = [
     "indra>=1.22",
     "indra_db>=0.0.1",
     "openai>=1.0",
-    "pystow>=0.5",
 ]
 
 [tool.setuptools]

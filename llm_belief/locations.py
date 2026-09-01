@@ -1,11 +1,9 @@
 """Locations of the external INDRA data files."""
 
-import pystow
+from pathlib import Path
 
 
-# Defaults to ~/.data/llm_belief_data. Set PYSTOW_HOME to move the data root.
-DATA_MODULE = pystow.module("llm_belief_data")
-DATA_DIRECTORY = DATA_MODULE.base
+DATA_DIRECTORY = Path("/scratch/h.yan/data/llm_belief_data")
 
 CURATIONS_PATH = DATA_DIRECTORY / "indra_assembly_curations.json"
 CORPUS_JSON_PATH = DATA_DIRECTORY / "indra_benchmark_corpus.json.gz"
