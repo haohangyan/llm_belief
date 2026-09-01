@@ -35,9 +35,34 @@ CURATION_SCHEMA = {
 }
 
 
-def build_prompt(statement, evidence_text):
+def build_prompt(
+    statement,
+    evidence_text,
+    abstract=None,
+    uniprot_context=None,
+    mesh_terms=None,
+):
     """Build the essential part of curatogether's AI-curation prompt."""
     categories = "\n".join(f"- {category}" for category in ERROR_CATEGORIES)
+    abstract_context = f"Abstract:\n{abstract}" if abstract else ""
+    entity_context = (
+        f"UniProt entity context (for grounding only):\n{uniprot_context}"
+        if uniprot_context
+        else ""
+    )
+    mesh_context = f"MeSH terms: {', '.join(mesh_terms)}" if mesh_terms else ""
+    context_parts = [abstract_context, mesh_context, entity_context]
+    context_parts = [part for part in context_parts if part]
+    supporting_context = (
+        "SUPPORTING CONTEXT\n" + "\n".join(context_parts)
+        if context_parts
+        else ""
+    )
+    context_rule = (
+        "- Use supporting context only to resolve ambiguity, not to infer a relation."
+        if context_parts
+        else ""
+    )
 
     return f"""You are an expert biological curator. Decide whether the INDRA
 statement is supported by the evidence sentence.
@@ -48,8 +73,11 @@ STATEMENT
 EVIDENCE
 {evidence_text}
 
+{supporting_context}
+
 RULES
 - Judge only the relation expressed by this evidence.
+{context_rule}
 - Expression or amount changes do not by themselves prove activity changes.
 - Check entity identity, relation type, polarity, negation, hypothesis language,
   experimental conditions, and modification sites.
@@ -66,9 +94,18 @@ Return only this JSON shape:
 }}"""
 
 
-def curate(client, statement, evidence_text):
+def curate(
+    client,
+    statement,
+    evidence_text,
+    abstract=None,
+    uniprot_context=None,
+    mesh_terms=None,
+):
     """Run one AI curation and return its structured decision."""
-    prompt = build_prompt(statement, evidence_text)
+    prompt = build_prompt(
+        statement, evidence_text, abstract, uniprot_context, mesh_terms
+    )
     result, metadata = client.complete_json(
         [{"role": "user", "content": prompt}],
         name="indra_curation",

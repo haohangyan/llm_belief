@@ -8,8 +8,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from llm_belief.ai_curation import curate
+from llm_belief.context import (
+    get_abstract,
+    get_uniprot_context,
+    load_mesh_terms,
+)
 from llm_belief.data import load_pickle_statements
-from llm_belief.llm import OpenAILLMClient
+from llm_belief.llm import LLMClient, OpenAILLMClient
 from llm_belief.locations import CORPUS_PICKLE_PATH, CURATIONS_PATH
 
 
@@ -26,10 +31,9 @@ def load_gold(limit, seed):
         pairs = random.Random(seed).sample(pairs, limit)
 
     return {
-        pair: {
-            "gold": "correct" if all(row["tag"] == "correct" for row in grouped[pair]) else "incorrect",
-            "human_tags": sorted({row["tag"] for row in grouped[pair]}),
-        }
+        pair: "correct"
+        if all(row["tag"] == "correct" for row in grouped[pair])
+        else "incorrect"
         for pair in pairs
     }
 
@@ -52,14 +56,12 @@ def load_entries(gold):
             if pair not in gold or pair in found:
                 continue
             found[pair] = {
-                "record_id": f"{matches_hash}:{source_hash}",
                 "matches_hash": matches_hash,
                 "source_hash": source_hash,
                 "statement": stmt,
                 "evidence_text": evidence.text,
                 "source_api": evidence.source_api,
                 "pmid": evidence.pmid or evidence.text_refs.get("PMID"),
-                **gold[pair],
             }
 
         if len(found) == len(gold):
@@ -79,31 +81,43 @@ def read_completed(path, model):
         for line in file:
             row = json.loads(line)
             if row.get("model") == model and row.get("prediction"):
-                completed[row["record_id"]] = row
+                pair = (row["matches_hash"], row["source_hash"])
+                completed[pair] = row
     return completed
 
 
-def score(rows):
+def score(rows, gold):
     predicted = [row for row in rows if row.get("prediction")]
     decided = [row for row in predicted if row["prediction"] != "uncertain"]
-    exact = sum(row["prediction"] == row["gold"] for row in predicted)
-    decided_exact = sum(row["prediction"] == row["gold"] for row in decided)
+    gold_for = lambda row: gold[(row["matches_hash"], row["source_hash"])]
+    exact = sum(row["prediction"] == gold_for(row) for row in predicted)
     return {
         "samples": len(predicted),
-        "gold": dict(Counter(row["gold"] for row in predicted)),
+        "gold": dict(Counter(gold_for(row) for row in predicted)),
         "predictions": dict(Counter(row["prediction"] for row in predicted)),
         "accuracy": exact / len(predicted) if predicted else None,
-        "decided_accuracy": decided_exact / len(decided) if decided else None,
         "coverage": len(decided) / len(predicted) if predicted else None,
-        "input_tokens": sum(row.get("input_tokens") or 0 for row in predicted),
-        "output_tokens": sum(row.get("output_tokens") or 0 for row in predicted),
     }
 
 
-def run_one(client, entry):
+def run_one(client, entry, mesh_by_pmid, context_mode):
     if not entry["evidence_text"]:
-        raise ValueError(f"Missing evidence text for {entry['record_id']}")
-    result = curate(client, entry["statement"], entry["evidence_text"])
+        raise ValueError(
+            f"Missing evidence text for "
+            f"{entry['matches_hash']}:{entry['source_hash']}"
+        )
+    context = {}
+    if context_mode == "full":
+        context = {
+            "abstract": get_abstract(entry["pmid"]),
+            "uniprot_context": get_uniprot_context(entry["statement"]),
+            "mesh_terms": (
+                mesh_by_pmid.get(int(entry["pmid"]), [])
+                if entry["pmid"]
+                else []
+            ),
+        }
+    result = curate(client, entry["statement"], entry["evidence_text"], **context)
     decision = result["decision"]
     prediction = {
         "accepted": "correct",
@@ -111,8 +125,11 @@ def run_one(client, entry):
         "uncertain": "uncertain",
     }[decision]
     return {
-        **entry,
-        "statement": None,
+        "matches_hash": entry["matches_hash"],
+        "source_hash": entry["source_hash"],
+        "evidence_text": entry["evidence_text"],
+        "source_api": entry["source_api"],
+        "pmid": entry["pmid"],
         "prediction": prediction,
         **result,
     }
@@ -121,6 +138,8 @@ def run_one(client, entry):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="gpt-5.6-luna")
+    parser.add_argument("--provider", choices=["openai", "local"], default="openai")
+    parser.add_argument("--context", choices=["none", "full"], default="full")
     parser.add_argument("--limit", type=int, default=0, help="0 means all unique curated pairs")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--workers", type=int, default=4)
@@ -128,33 +147,57 @@ def main():
     args = parser.parse_args()
 
     safe_model = args.model.replace("/", "_")
-    output = args.output or Path("outputs") / f"openai_{safe_model}.jsonl"
+    output = args.output or Path("outputs") / (
+        f"{args.provider}_{args.context}_{safe_model}.jsonl"
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
 
     gold = load_gold(args.limit or None, args.seed)
     entries = load_entries(gold)
+    mesh_by_pmid = (
+        load_mesh_terms(entry["pmid"] for entry in entries)
+        if args.context == "full"
+        else {}
+    )
     completed = read_completed(output, args.model)
-    pending = [entry for entry in entries if entry["record_id"] not in completed]
+    pending = [
+        entry
+        for entry in entries
+        if (entry["matches_hash"], entry["source_hash"]) not in completed
+    ]
     print(f"benchmark={len(entries)} completed={len(completed)} pending={len(pending)}")
 
-    client = OpenAILLMClient(args.model)
+    client = (
+        OpenAILLMClient(args.model)
+        if args.provider == "openai"
+        else LLMClient(args.model)
+    )
     with output.open("a") as file, ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(run_one, client, entry): entry for entry in pending}
+        futures = {
+            pool.submit(run_one, client, entry, mesh_by_pmid, args.context): entry
+            for entry in pending
+        }
         for index, future in enumerate(as_completed(futures), start=1):
             entry = futures[future]
             try:
                 row = future.result()
             except Exception as error:
-                print(f"error {entry['record_id']}: {error}")
+                print(
+                    f"error {entry['matches_hash']}:{entry['source_hash']}: {error}"
+                )
                 continue
-            completed[row["record_id"]] = row
+            completed[(row["matches_hash"], row["source_hash"])] = row
             file.write(json.dumps(row) + "\n")
             file.flush()
             if index % 10 == 0 or index == len(pending):
                 print(f"finished {index}/{len(pending)}")
 
-    rows = [completed[entry["record_id"]] for entry in entries if entry["record_id"] in completed]
-    print(json.dumps(score(rows), indent=2))
+    rows = [
+        completed[(entry["matches_hash"], entry["source_hash"])]
+        for entry in entries
+        if (entry["matches_hash"], entry["source_hash"]) in completed
+    ]
+    print(json.dumps(score(rows, gold), indent=2))
     print(f"results={output}")
 
 

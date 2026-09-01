@@ -33,6 +33,7 @@ class LLMClient:
             model=self.model,
             messages=[dict(message) for message in messages],
             temperature=0.0,
+            max_tokens=512,
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content
@@ -65,10 +66,4 @@ class OpenAILLMClient:
             },
             store=False,
         )
-        usage = response.usage
-        return json.loads(response.output_text), {
-            "response_id": response.id,
-            "input_tokens": usage.input_tokens if usage else None,
-            "output_tokens": usage.output_tokens if usage else None,
-            "total_tokens": usage.total_tokens if usage else None,
-        }
+        return json.loads(response.output_text), {}

@@ -7,4 +7,4 @@ __pycache__/
 
 # Reference project; it is not part of llm-belief.
 /curatogether-main/
-/outputs/
+outputs/
