@@ -100,23 +100,21 @@ def score(rows, gold):
     }
 
 
-def run_one(client, entry, mesh_by_pmid, context_mode):
+def run_one(client, entry, mesh_by_pmid, contexts):
     if not entry["evidence_text"]:
         raise ValueError(
             f"Missing evidence text for "
             f"{entry['matches_hash']}:{entry['source_hash']}"
         )
     context = {}
-    if context_mode == "full":
-        context = {
-            "abstract": get_abstract(entry["pmid"]),
-            "uniprot_context": get_uniprot_context(entry["statement"]),
-            "mesh_terms": (
-                mesh_by_pmid.get(int(entry["pmid"]), [])
-                if entry["pmid"]
-                else []
-            ),
-        }
+    if "uniprot" in contexts:
+        context["uniprot_context"] = get_uniprot_context(entry["statement"])
+    if "abstract" in contexts:
+        context["abstract"] = get_abstract(entry["pmid"])
+    if "mesh" in contexts:
+        context["mesh_terms"] = (
+            mesh_by_pmid.get(int(entry["pmid"]), []) if entry["pmid"] else []
+        )
     result = curate(client, entry["statement"], entry["evidence_text"], **context)
     decision = result["decision"]
     prediction = {
@@ -139,16 +137,30 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="gpt-5.6-luna")
     parser.add_argument("--provider", choices=["openai", "local"], default="openai")
-    parser.add_argument("--context", choices=["none", "full"], default="full")
+    parser.add_argument(
+        "--context",
+        nargs="+",
+        choices=["none", "uniprot", "abstract", "mesh", "full"],
+        default=["none"],
+    )
     parser.add_argument("--limit", type=int, default=0, help="0 means all unique curated pairs")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
+    contexts = set(args.context) - {"none"}
+    if "full" in contexts:
+        contexts = {"uniprot", "abstract", "mesh"}
+        context_name = "full"
+    else:
+        context_name = "_".join(
+            name for name in ("uniprot", "abstract", "mesh") if name in contexts
+        ) or "none"
+
     safe_model = args.model.replace("/", "_")
     output = args.output or Path("outputs") / (
-        f"{args.provider}_{args.context}_{safe_model}.jsonl"
+        f"{args.provider}_{context_name}_{safe_model}.jsonl"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -156,7 +168,7 @@ def main():
     entries = load_entries(gold)
     mesh_by_pmid = (
         load_mesh_terms(entry["pmid"] for entry in entries)
-        if args.context == "full"
+        if "mesh" in contexts
         else {}
     )
     completed = read_completed(output, args.model)
@@ -174,7 +186,7 @@ def main():
     )
     with output.open("a") as file, ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
-            pool.submit(run_one, client, entry, mesh_by_pmid, args.context): entry
+            pool.submit(run_one, client, entry, mesh_by_pmid, contexts): entry
             for entry in pending
         }
         for index, future in enumerate(as_completed(futures), start=1):
