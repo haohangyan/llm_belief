@@ -33,7 +33,7 @@ class LLMClient:
             model=self.model,
             messages=[dict(message) for message in messages],
             temperature=0.0,
-            max_tokens=1024,
+            max_tokens=512,
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content
