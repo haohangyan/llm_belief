@@ -32,6 +32,33 @@ def get_abstract(pmid):
     return "\n".join(json.loads(row[0]))
 
 
+def load_abstracts(pmids):
+    if not INDRA_DB_LITE_PATH.exists():
+        return {}
+
+    pmids = {int(pmid) for pmid in pmids if pmid}
+    if not pmids:
+        return {}
+
+    uri = f"file:{INDRA_DB_LITE_PATH}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as connection:
+        connection.execute("CREATE TEMP TABLE wanted_pmids (pmid INTEGER PRIMARY KEY)")
+        connection.executemany(
+            "INSERT INTO wanted_pmids VALUES (?)", ((pmid,) for pmid in pmids)
+        )
+        rows = connection.execute("""
+            SELECT pmid_text_refs.pmid, best_content.content
+            FROM pmid_text_refs
+            JOIN wanted_pmids ON pmid_text_refs.pmid = wanted_pmids.pmid
+            JOIN best_content USING (text_ref_id)
+            WHERE best_content.text_type = 'abstract'
+        """)
+        abstracts = {}
+        for pmid, content in rows:
+            abstracts.setdefault(pmid, "\n".join(json.loads(content)))
+    return abstracts
+
+
 def _mesh_id(mesh_num, is_concept):
     prefix = "C" if is_concept else "D"
     # mesh_num < 66332 and < 588418 use the old six-digit format.

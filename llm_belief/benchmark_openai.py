@@ -3,14 +3,16 @@
 import argparse
 import json
 import random
+import time
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import timedelta
 from pathlib import Path
 
 from llm_belief.ai_curation import curate
 from llm_belief.context import (
-    get_abstract,
     get_uniprot_context,
+    load_abstracts,
     load_mesh_terms,
 )
 from llm_belief.data import load_pickle_statements
@@ -100,7 +102,7 @@ def score(rows, gold):
     }
 
 
-def run_one(client, entry, mesh_by_pmid, contexts):
+def run_one(client, entry, abstract_by_pmid, mesh_by_pmid, contexts):
     if not entry["evidence_text"]:
         raise ValueError(
             f"Missing evidence text for "
@@ -110,7 +112,9 @@ def run_one(client, entry, mesh_by_pmid, contexts):
     if "uniprot" in contexts:
         context["uniprot_context"] = get_uniprot_context(entry["statement"])
     if "abstract" in contexts:
-        context["abstract"] = get_abstract(entry["pmid"])
+        context["abstract"] = (
+            abstract_by_pmid.get(int(entry["pmid"])) if entry["pmid"] else None
+        )
     if "mesh" in contexts:
         context["mesh_terms"] = (
             mesh_by_pmid.get(int(entry["pmid"]), []) if entry["pmid"] else []
@@ -134,6 +138,7 @@ def run_one(client, entry, mesh_by_pmid, contexts):
 
 
 def main():
+    started_at = time.perf_counter()
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="gpt-5.6-luna")
     parser.add_argument("--provider", choices=["openai", "local"], default="openai")
@@ -166,6 +171,26 @@ def main():
 
     gold = load_gold(args.limit or None, args.seed)
     entries = load_entries(gold)
+    abstract_by_pmid = (
+        load_abstracts(entry["pmid"] for entry in entries)
+        if "abstract" in contexts
+        else {}
+    )
+    abstract_stats = None
+    if "abstract" in contexts:
+        available = sum(
+            bool(abstract_by_pmid.get(int(entry["pmid"])))
+            for entry in entries
+            if entry["pmid"]
+        )
+        abstract_stats = {
+            "available": available,
+            "missing": len(entries) - available,
+        }
+        print(
+            f"abstract available={abstract_stats['available']} "
+            f"missing={abstract_stats['missing']}"
+        )
     mesh_by_pmid = (
         load_mesh_terms(entry["pmid"] for entry in entries)
         if "mesh" in contexts
@@ -184,9 +209,17 @@ def main():
         if args.provider == "openai"
         else LLMClient(args.model)
     )
+    successful_this_run = 0
     with output.open("a") as file, ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
-            pool.submit(run_one, client, entry, mesh_by_pmid, contexts): entry
+            pool.submit(
+                run_one,
+                client,
+                entry,
+                abstract_by_pmid,
+                mesh_by_pmid,
+                contexts,
+            ): entry
             for entry in pending
         }
         for index, future in enumerate(as_completed(futures), start=1):
@@ -199,6 +232,7 @@ def main():
                 )
                 continue
             completed[(row["matches_hash"], row["source_hash"])] = row
+            successful_this_run += 1
             file.write(json.dumps(row) + "\n")
             file.flush()
             if index % 10 == 0 or index == len(pending):
@@ -209,7 +243,14 @@ def main():
         for entry in entries
         if (entry["matches_hash"], entry["source_hash"]) in completed
     ]
-    print(json.dumps(score(rows, gold), indent=2))
+    summary = score(rows, gold)
+    if abstract_stats:
+        summary["abstracts"] = abstract_stats
+    elapsed_seconds = time.perf_counter() - started_at
+    summary["processed_this_run"] = successful_this_run
+    summary["elapsed_seconds"] = round(elapsed_seconds, 2)
+    summary["elapsed"] = str(timedelta(seconds=round(elapsed_seconds)))
+    print(json.dumps(summary, indent=2))
     print(f"results={output}")
 
 
