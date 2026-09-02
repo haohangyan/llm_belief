@@ -11,6 +11,7 @@ from pathlib import Path
 
 from llm_belief.ai_curation import curate
 from llm_belief.context import (
+    fetch_pubmed_abstracts,
     get_uniprot_context,
     load_abstracts,
     load_mesh_terms,
@@ -102,7 +103,14 @@ def score(rows, gold):
     }
 
 
-def run_one(client, entry, abstract_by_pmid, mesh_by_pmid, contexts):
+def run_one(
+    client,
+    entry,
+    abstract_by_pmid,
+    mesh_by_pmid,
+    contexts,
+    curate_function,
+):
     if not entry["evidence_text"]:
         raise ValueError(
             f"Missing evidence text for "
@@ -119,7 +127,9 @@ def run_one(client, entry, abstract_by_pmid, mesh_by_pmid, contexts):
         context["mesh_terms"] = (
             mesh_by_pmid.get(int(entry["pmid"]), []) if entry["pmid"] else []
         )
-    result = curate(client, entry["statement"], entry["evidence_text"], **context)
+    result = curate_function(
+        client, entry["statement"], entry["evidence_text"], **context
+    )
     decision = result["decision"]
     prediction = {
         "accepted": "correct",
@@ -137,16 +147,24 @@ def run_one(client, entry, abstract_by_pmid, mesh_by_pmid, contexts):
     }
 
 
-def main():
+def main(
+    curate_function=curate,
+    default_context=("none",),
+    default_provider="openai",
+    default_model="gpt-5.6-luna",
+    output_tag=None,
+):
     started_at = time.perf_counter()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="gpt-5.6-luna")
-    parser.add_argument("--provider", choices=["openai", "local"], default="openai")
+    parser.add_argument("--model", default=default_model)
+    parser.add_argument(
+        "--provider", choices=["openai", "local"], default=default_provider
+    )
     parser.add_argument(
         "--context",
         nargs="+",
         choices=["none", "uniprot", "abstract", "mesh", "full"],
-        default=["none"],
+        default=list(default_context),
     )
     parser.add_argument("--limit", type=int, default=0, help="0 means all unique curated pairs")
     parser.add_argument("--seed", type=int, default=7)
@@ -164,18 +182,29 @@ def main():
         ) or "none"
 
     safe_model = args.model.replace("/", "_")
+    tag = f"_{output_tag}" if output_tag else ""
     output = args.output or Path("outputs") / (
-        f"{args.provider}_{context_name}_{safe_model}.jsonl"
+        f"{args.provider}{tag}_{context_name}_{safe_model}.jsonl"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
     gold = load_gold(args.limit or None, args.seed)
     entries = load_entries(gold)
-    abstract_by_pmid = (
+    local_abstracts = (
         load_abstracts(entry["pmid"] for entry in entries)
         if "abstract" in contexts
         else {}
     )
+    abstract_by_pmid = dict(local_abstracts)
+    pubmed_abstracts = {}
+    if "abstract" in contexts:
+        missing_pmids = {
+            int(entry["pmid"])
+            for entry in entries
+            if entry["pmid"] and int(entry["pmid"]) not in abstract_by_pmid
+        }
+        pubmed_abstracts = fetch_pubmed_abstracts(missing_pmids)
+        abstract_by_pmid.update(pubmed_abstracts)
     abstract_stats = None
     if "abstract" in contexts:
         available = sum(
@@ -186,6 +215,16 @@ def main():
         abstract_stats = {
             "available": available,
             "missing": len(entries) - available,
+            "from_indra_lite": sum(
+                bool(local_abstracts.get(int(entry["pmid"])))
+                for entry in entries
+                if entry["pmid"]
+            ),
+            "fetched_from_pubmed": sum(
+                bool(pubmed_abstracts.get(int(entry["pmid"])))
+                for entry in entries
+                if entry["pmid"]
+            ),
         }
         print(
             f"abstract available={abstract_stats['available']} "
@@ -219,6 +258,7 @@ def main():
                 abstract_by_pmid,
                 mesh_by_pmid,
                 contexts,
+                curate_function,
             ): entry
             for entry in pending
         }

@@ -3,8 +3,10 @@
 import json
 import re
 import sqlite3
+import time
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 from llm_belief.locations import (
     INDRA_DB_LITE_PATH,
@@ -56,6 +58,48 @@ def load_abstracts(pmids):
         abstracts = {}
         for pmid, content in rows:
             abstracts.setdefault(pmid, "\n".join(json.loads(content)))
+    return abstracts
+
+
+def fetch_pubmed_abstracts(pmids):
+    """Fetch missing abstracts from the PubMed endpoint used by Curatogether."""
+    pmids = sorted({int(pmid) for pmid in pmids if pmid})
+    abstracts = {}
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+    for start in range(0, len(pmids), 200):
+        batch = pmids[start : start + 200]
+        data = urlencode(
+            {
+                "db": "pubmed",
+                "id": ",".join(map(str, batch)),
+                "retmode": "xml",
+                "rettype": "abstract",
+                "tool": "llm_belief",
+            }
+        ).encode()
+        request = Request(url, data=data, headers={"User-Agent": "llm-belief/0.1"})
+        try:
+            with urlopen(request, timeout=30) as response:
+                root = ElementTree.parse(response).getroot()
+        except Exception as error:
+            print(f"PubMed abstract fetch failed: {error}")
+            continue
+
+        for article in root.findall(".//PubmedArticle"):
+            pmid = article.findtext(".//MedlineCitation/PMID")
+            sections = []
+            for node in article.findall(".//Article/Abstract/AbstractText"):
+                text = "".join(node.itertext()).strip()
+                label = node.get("Label")
+                if text:
+                    sections.append(f"{label}: {text}" if label else text)
+            if pmid and sections:
+                abstracts[int(pmid)] = "\n".join(sections)
+
+        if start + 200 < len(pmids):
+            time.sleep(0.34)
+
     return abstracts
 
 
