@@ -1,106 +1,15 @@
-"""Optional abstract and UniProt context for curation."""
+"""Optional MeSH and UniProt context for curation."""
 
 import json
 import re
 import sqlite3
-import time
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
-from xml.etree import ElementTree
+from urllib.request import urlopen
 
 from llm_belief.locations import (
     INDRA_DB_LITE_PATH,
     UNIPROT_CACHE_PATH,
 )
-
-
-def get_abstract(pmid):
-    if not pmid or not INDRA_DB_LITE_PATH.exists():
-        return None
-
-    query = """
-        SELECT best_content.content
-        FROM pmid_text_refs
-        JOIN best_content USING (text_ref_id)
-        WHERE pmid_text_refs.pmid = ? AND best_content.text_type = 'abstract'
-        LIMIT 1
-    """
-    uri = f"file:{INDRA_DB_LITE_PATH}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as connection:
-        row = connection.execute(query, (int(pmid),)).fetchone()
-
-    if not row:
-        return None
-    return "\n".join(json.loads(row[0]))
-
-
-def load_abstracts(pmids):
-    if not INDRA_DB_LITE_PATH.exists():
-        return {}
-
-    pmids = {int(pmid) for pmid in pmids if pmid}
-    if not pmids:
-        return {}
-
-    uri = f"file:{INDRA_DB_LITE_PATH}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as connection:
-        connection.execute("CREATE TEMP TABLE wanted_pmids (pmid INTEGER PRIMARY KEY)")
-        connection.executemany(
-            "INSERT INTO wanted_pmids VALUES (?)", ((pmid,) for pmid in pmids)
-        )
-        rows = connection.execute("""
-            SELECT pmid_text_refs.pmid, best_content.content
-            FROM pmid_text_refs
-            JOIN wanted_pmids ON pmid_text_refs.pmid = wanted_pmids.pmid
-            JOIN best_content USING (text_ref_id)
-            WHERE best_content.text_type = 'abstract'
-        """)
-        abstracts = {}
-        for pmid, content in rows:
-            abstracts.setdefault(pmid, "\n".join(json.loads(content)))
-    return abstracts
-
-
-def fetch_pubmed_abstracts(pmids):
-    """Fetch missing abstracts from the PubMed endpoint used by Curatogether."""
-    pmids = sorted({int(pmid) for pmid in pmids if pmid})
-    abstracts = {}
-    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-
-    for start in range(0, len(pmids), 200):
-        batch = pmids[start : start + 200]
-        data = urlencode(
-            {
-                "db": "pubmed",
-                "id": ",".join(map(str, batch)),
-                "retmode": "xml",
-                "rettype": "abstract",
-                "tool": "llm_belief",
-            }
-        ).encode()
-        request = Request(url, data=data, headers={"User-Agent": "llm-belief/0.1"})
-        try:
-            with urlopen(request, timeout=30) as response:
-                root = ElementTree.parse(response).getroot()
-        except Exception as error:
-            print(f"PubMed abstract fetch failed: {error}")
-            continue
-
-        for article in root.findall(".//PubmedArticle"):
-            pmid = article.findtext(".//MedlineCitation/PMID")
-            sections = []
-            for node in article.findall(".//Article/Abstract/AbstractText"):
-                text = "".join(node.itertext()).strip()
-                label = node.get("Label")
-                if text:
-                    sections.append(f"{label}: {text}" if label else text)
-            if pmid and sections:
-                abstracts[int(pmid)] = "\n".join(sections)
-
-        if start + 200 < len(pmids):
-            time.sleep(0.34)
-
-    return abstracts
 
 
 def _mesh_id(mesh_num, is_concept):

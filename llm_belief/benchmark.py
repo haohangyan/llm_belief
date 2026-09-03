@@ -9,11 +9,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
 from pathlib import Path
 
+from llm_belief.abstract_cache import get_abstracts
 from llm_belief.curation import curate
 from llm_belief.context import (
-    fetch_pubmed_abstracts,
     get_uniprot_context,
-    load_abstracts,
     load_mesh_terms,
 )
 from llm_belief.data import load_pickle_statements
@@ -183,21 +182,11 @@ def main():
 
     gold = load_gold(args.limit or None, args.seed)
     entries = load_entries(gold)
-    local_abstracts = (
-        load_abstracts(entry["pmid"] for entry in entries)
+    abstract_by_pmid, abstract_cache_stats = (
+        get_abstracts(entry["pmid"] for entry in entries)
         if "abstract" in contexts
-        else {}
+        else ({}, None)
     )
-    abstract_by_pmid = dict(local_abstracts)
-    pubmed_abstracts = {}
-    if "abstract" in contexts:
-        missing_pmids = {
-            int(entry["pmid"])
-            for entry in entries
-            if entry["pmid"] and int(entry["pmid"]) not in abstract_by_pmid
-        }
-        pubmed_abstracts = fetch_pubmed_abstracts(missing_pmids)
-        abstract_by_pmid.update(pubmed_abstracts)
     abstract_stats = None
     if "abstract" in contexts:
         available = sum(
@@ -208,16 +197,7 @@ def main():
         abstract_stats = {
             "available": available,
             "missing": len(entries) - available,
-            "from_indra_lite": sum(
-                bool(local_abstracts.get(int(entry["pmid"])))
-                for entry in entries
-                if entry["pmid"]
-            ),
-            "fetched_from_pubmed": sum(
-                bool(pubmed_abstracts.get(int(entry["pmid"])))
-                for entry in entries
-                if entry["pmid"]
-            ),
+            "cache": abstract_cache_stats,
         }
         print(
             f"abstract available={abstract_stats['available']} "
