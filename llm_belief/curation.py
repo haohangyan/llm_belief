@@ -1,4 +1,4 @@
-"""Ask an LLM whether an INDRA statement is supported by its evidence."""
+"""Curate whether an INDRA statement is supported by its evidence."""
 
 
 ERROR_CATEGORIES = (
@@ -42,7 +42,7 @@ def build_prompt(
     uniprot_context=None,
     mesh_terms=None,
 ):
-    """Build the essential part of curatogether's AI-curation prompt."""
+    """Build the Gemma curation prompt."""
     categories = "\n".join(f"- {category}" for category in ERROR_CATEGORIES)
     abstract_context = f"Abstract:\n{abstract}" if abstract else ""
     entity_context = (

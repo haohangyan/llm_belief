@@ -1,4 +1,4 @@
-"""Run AI curation against the INDRA human-curation benchmark."""
+"""Benchmark the Gemma curation workflow against human curations."""
 
 import argparse
 import json
@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
 from pathlib import Path
 
-from llm_belief.ai_curation import curate
+from llm_belief.curation import curate
 from llm_belief.context import (
     fetch_pubmed_abstracts,
     get_uniprot_context,
@@ -109,7 +109,6 @@ def run_one(
     abstract_by_pmid,
     mesh_by_pmid,
     contexts,
-    curate_function,
 ):
     if not entry["evidence_text"]:
         raise ValueError(
@@ -127,9 +126,7 @@ def run_one(
         context["mesh_terms"] = (
             mesh_by_pmid.get(int(entry["pmid"]), []) if entry["pmid"] else []
         )
-    result = curate_function(
-        client, entry["statement"], entry["evidence_text"], **context
-    )
+    result = curate(client, entry["statement"], entry["evidence_text"], **context)
     decision = result["decision"]
     prediction = {
         "accepted": "correct",
@@ -147,30 +144,27 @@ def run_one(
     }
 
 
-def main(
-    curate_function=curate,
-    default_context=("none",),
-    default_provider="openai",
-    default_model="gpt-5.6-luna",
-    output_tag=None,
-):
+def main():
     started_at = time.perf_counter()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=default_model)
-    parser.add_argument(
-        "--provider", choices=["openai", "local"], default=default_provider
-    )
+    parser.add_argument("--model")
+    parser.add_argument("--provider", choices=["local", "openai"], default="local")
     parser.add_argument(
         "--context",
         nargs="+",
         choices=["none", "uniprot", "abstract", "mesh", "full"],
-        default=list(default_context),
+        default=["none"],
     )
     parser.add_argument("--limit", type=int, default=0, help="0 means all unique curated pairs")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    model = args.model or (
+        "gpt-5.6-luna"
+        if args.provider == "openai"
+        else "google/gemma-4-26B-A4B-it"
+    )
 
     contexts = set(args.context) - {"none"}
     if "full" in contexts:
@@ -181,10 +175,9 @@ def main(
             name for name in ("uniprot", "abstract", "mesh") if name in contexts
         ) or "none"
 
-    safe_model = args.model.replace("/", "_")
-    tag = f"_{output_tag}" if output_tag else ""
+    safe_model = model.replace("/", "_")
     output = args.output or Path("outputs") / (
-        f"{args.provider}{tag}_{context_name}_{safe_model}.jsonl"
+        f"{args.provider}_{context_name}_{safe_model}.jsonl"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -235,7 +228,7 @@ def main(
         if "mesh" in contexts
         else {}
     )
-    completed = read_completed(output, args.model)
+    completed = read_completed(output, model)
     pending = [
         entry
         for entry in entries
@@ -244,9 +237,9 @@ def main(
     print(f"benchmark={len(entries)} completed={len(completed)} pending={len(pending)}")
 
     client = (
-        OpenAILLMClient(args.model)
+        OpenAILLMClient(model)
         if args.provider == "openai"
-        else LLMClient(args.model)
+        else LLMClient(model)
     )
     successful_this_run = 0
     with output.open("a") as file, ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -258,7 +251,6 @@ def main(
                 abstract_by_pmid,
                 mesh_by_pmid,
                 contexts,
-                curate_function,
             ): entry
             for entry in pending
         }
