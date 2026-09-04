@@ -32,20 +32,22 @@ def _connect():
 
 
 def load_abstracts(pmids):
-    pmids = {int(pmid) for pmid in pmids if pmid}
+    pmids = sorted({int(pmid) for pmid in pmids if pmid})
     if not pmids or not ABSTRACT_CACHE_PATH.exists():
         return {}
 
+    abstracts = {}
     with _connect() as connection:
-        connection.execute("CREATE TEMP TABLE wanted_pmids (pmid INTEGER PRIMARY KEY)")
-        connection.executemany(
-            "INSERT INTO wanted_pmids VALUES (?)", ((pmid,) for pmid in pmids)
-        )
-        rows = connection.execute("""
-            SELECT abstracts.pmid, abstracts.abstract
-            FROM abstracts JOIN wanted_pmids USING (pmid)
-        """)
-        return dict(rows)
+        for start in range(0, len(pmids), 500):
+            batch = pmids[start : start + 500]
+            placeholders = ",".join("?" for _ in batch)
+            rows = connection.execute(
+                f"SELECT pmid, abstract FROM abstracts "
+                f"WHERE pmid IN ({placeholders})",
+                batch,
+            )
+            abstracts.update(rows)
+    return abstracts
 
 
 def _fetch_pubmed(pmids):
@@ -105,10 +107,12 @@ def get_abstracts(pmids):
         f"[abstract] checking {len(pmids)} PMIDs in {ABSTRACT_CACHE_PATH}",
         flush=True,
     )
+    started_at = time.perf_counter()
     cached = load_abstracts(pmids)
     missing = pmids - set(cached)
     print(
-        f"[abstract] cached={len(cached)} missing={len(missing)}",
+        f"[abstract] cached={len(cached)} missing={len(missing)} "
+        f"lookup_elapsed={time.perf_counter() - started_at:.1f}s",
         flush=True,
     )
     downloaded, queried = _fetch_pubmed(missing)
