@@ -1,5 +1,5 @@
 """Persistent abstract cache populated from INDRA's principal database."""
-
+# python -m llm_belief.abstract_cache --batch-size 100000
 import argparse
 import json
 import sqlite3
@@ -53,9 +53,16 @@ def _fetch_pubmed(pmids):
     abstracts = {}
     queried = set()
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    total_batches = (len(pmids) + 199) // 200
 
     for start in range(0, len(pmids), 200):
         batch = pmids[start : start + 200]
+        batch_number = start // 200 + 1
+        print(
+            f"[abstract] fetching PubMed batch {batch_number}/{total_batches} "
+            f"({len(batch)} PMIDs)",
+            flush=True,
+        )
         data = urlencode(
             {
                 "db": "pubmed",
@@ -94,8 +101,16 @@ def _fetch_pubmed(pmids):
 def get_abstracts(pmids):
     """Read requested abstracts and download only cache misses from PubMed."""
     pmids = {int(pmid) for pmid in pmids if pmid}
+    print(
+        f"[abstract] checking {len(pmids)} PMIDs in {ABSTRACT_CACHE_PATH}",
+        flush=True,
+    )
     cached = load_abstracts(pmids)
     missing = pmids - set(cached)
+    print(
+        f"[abstract] cached={len(cached)} missing={len(missing)}",
+        flush=True,
+    )
     downloaded, queried = _fetch_pubmed(missing)
 
     if queried:

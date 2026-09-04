@@ -180,8 +180,27 @@ def main():
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    print(f"[setup] loading gold curations from {CURATIONS_PATH}", flush=True)
+    phase_started = time.perf_counter()
     gold = load_gold(args.limit or None, args.seed)
+    print(
+        f"[setup] loaded {len(gold)} gold pairs "
+        f"in {time.perf_counter() - phase_started:.1f}s",
+        flush=True,
+    )
+
+    print(f"[setup] loading and matching corpus from {CORPUS_PICKLE_PATH}", flush=True)
+    phase_started = time.perf_counter()
     entries = load_entries(gold)
+    print(
+        f"[setup] matched {len(entries)} corpus entries "
+        f"in {time.perf_counter() - phase_started:.1f}s",
+        flush=True,
+    )
+
+    if "abstract" in contexts:
+        print("[setup] loading abstracts", flush=True)
+        phase_started = time.perf_counter()
     abstract_by_pmid, abstract_cache_stats = (
         get_abstracts(entry["pmid"] for entry in entries)
         if "abstract" in contexts
@@ -201,25 +220,47 @@ def main():
         }
         print(
             f"abstract available={abstract_stats['available']} "
-            f"missing={abstract_stats['missing']}"
+            f"missing={abstract_stats['missing']} "
+            f"elapsed={time.perf_counter() - phase_started:.1f}s",
+            flush=True,
         )
+
+    if "mesh" in contexts:
+        print("[setup] loading MeSH terms", flush=True)
+        phase_started = time.perf_counter()
     mesh_by_pmid = (
         load_mesh_terms(entry["pmid"] for entry in entries)
         if "mesh" in contexts
         else {}
     )
+    if "mesh" in contexts:
+        print(
+            f"[setup] loaded MeSH terms in "
+            f"{time.perf_counter() - phase_started:.1f}s",
+            flush=True,
+        )
+
+    print(f"[setup] reading completed results from {output}", flush=True)
     completed = read_completed(output, model)
     pending = [
         entry
         for entry in entries
         if (entry["matches_hash"], entry["source_hash"]) not in completed
     ]
-    print(f"benchmark={len(entries)} completed={len(completed)} pending={len(pending)}")
+    print(
+        f"benchmark={len(entries)} completed={len(completed)} pending={len(pending)}",
+        flush=True,
+    )
 
     client = (
         OpenAILLMClient(model)
         if args.provider == "openai"
         else LLMClient(model)
+    )
+    print(
+        f"[run] starting model requests with {args.workers} workers"
+        + ("; UniProt cache misses are fetched during this phase" if "uniprot" in contexts else ""),
+        flush=True,
     )
     successful_this_run = 0
     with output.open("a") as file, ThreadPoolExecutor(max_workers=args.workers) as pool:
