@@ -161,6 +161,10 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="0 means all unique curated pairs")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument(
+        "--reasoning-effort", choices=["low", "medium", "high"]
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     model = args.model or (
@@ -179,8 +183,13 @@ def main():
         ) or "none"
 
     safe_model = model.replace("/", "_")
+    reasoning_tag = (
+        f"_{args.reasoning_effort}_{args.max_tokens}"
+        if args.reasoning_effort
+        else ""
+    )
     output = args.output or Path("outputs") / (
-        f"{args.provider}_{context_name}_{safe_model}.jsonl"
+        f"{args.provider}_{context_name}_{safe_model}{reasoning_tag}.jsonl"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -259,7 +268,7 @@ def main():
     client = (
         OpenAILLMClient(model)
         if args.provider == "openai"
-        else LLMClient(model)
+        else LLMClient(model, args.max_tokens, args.reasoning_effort)
     )
     print(
         f"[run] starting model requests with {args.workers} workers"

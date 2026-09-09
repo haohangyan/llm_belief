@@ -9,8 +9,10 @@ from openai import OpenAI
 class LLMClient:
     """Chat-completion client shared by local development and vLLM on H200."""
 
-    def __init__(self, model):
+    def __init__(self, model, max_tokens=1024, reasoning_effort=None):
         self.model = model
+        self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
         self._client = OpenAI(
             base_url="http://127.0.0.1:8000/v1",
             api_key="not-needed",
@@ -34,7 +36,7 @@ class LLMClient:
                 model=self.model,
                 messages=[dict(message) for message in messages],
                 temperature=0.0,
-                max_tokens=1024,
+                max_tokens=self.max_tokens,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
@@ -43,6 +45,11 @@ class LLMClient:
                         "strict": True,
                     },
                 },
+                extra_body=(
+                    {"reasoning_effort": self.reasoning_effort}
+                    if self.reasoning_effort
+                    else None
+                ),
             )
             content = response.choices[0].message.content
             if content:
