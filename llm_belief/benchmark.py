@@ -93,11 +93,15 @@ def score(rows, gold):
     decided = [row for row in predicted if row["prediction"] != "uncertain"]
     gold_for = lambda row: gold[(row["matches_hash"], row["source_hash"])]
     exact = sum(row["prediction"] == gold_for(row) for row in predicted)
+    total = len(gold)
     return {
+        "total": total,
         "samples": len(predicted),
-        "gold": dict(Counter(gold_for(row) for row in predicted)),
+        "failed": total - len(predicted),
+        "gold": dict(Counter(gold.values())),
         "predictions": dict(Counter(row["prediction"] for row in predicted)),
         "accuracy": exact / len(predicted) if predicted else None,
+        "overall_accuracy": exact / total if total else None,
         "coverage": len(decided) / len(predicted) if predicted else None,
     }
 

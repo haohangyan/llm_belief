@@ -29,17 +29,27 @@ class LLMClient:
         return content
 
     def complete_json(self, messages, name, schema):
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[dict(message) for message in messages],
-            temperature=0.0,
-            max_tokens=512,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
-        if not content:
-            raise RuntimeError("The model returned no JSON")
-        return json.loads(content), {}
+        for attempt in range(2):
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[dict(message) for message in messages],
+                temperature=0.0,
+                max_tokens=1024,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": name,
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+            )
+            content = response.choices[0].message.content
+            if content:
+                return json.loads(content), {}
+            if attempt == 0:
+                print("The model returned no JSON; retrying once", flush=True)
+        raise RuntimeError("The model returned no JSON after one retry")
 
 
 class OpenAILLMClient:
