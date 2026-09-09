@@ -4,6 +4,8 @@ import argparse
 import json
 import subprocess
 import sys
+import time
+from datetime import timedelta
 from pathlib import Path
 
 from llm_belief.benchmark import load_gold, read_completed, score
@@ -27,6 +29,7 @@ def main():
     context_name = "_".join(args.context)
     gold = load_gold(args.limit or None, args.seed)
     summaries = []
+    benchmark_started = time.perf_counter()
 
     for max_tokens in (512, 1024):
         for effort in ("low", "medium", "high"):
@@ -61,7 +64,9 @@ def main():
             ]
             if args.limit:
                 command.extend(["--limit", str(args.limit)])
+            run_started = time.perf_counter()
             subprocess.run(command, check=True)
+            elapsed_seconds = time.perf_counter() - run_started
 
             completed = read_completed(output, args.model)
             rows = [row for pair, row in completed.items() if pair in gold]
@@ -69,15 +74,25 @@ def main():
             summary = {
                 "reasoning_effort": effort,
                 "max_tokens": max_tokens,
+                "elapsed_seconds": round(elapsed_seconds, 2),
+                "elapsed": str(timedelta(seconds=round(elapsed_seconds))),
                 **summary,
             }
             summaries.append(summary)
 
+    total_elapsed = time.perf_counter() - benchmark_started
+    result = {
+        "model": args.model,
+        "context": args.context,
+        "total_elapsed_seconds": round(total_elapsed, 2),
+        "total_elapsed": str(timedelta(seconds=round(total_elapsed))),
+        "runs": summaries,
+    }
     summary_path = Path("outputs") / (
         f"reasoning_{context_name}_{safe_model}_summary.json"
     )
-    summary_path.write_text(json.dumps(summaries, indent=2) + "\n")
-    print(json.dumps(summaries, indent=2))
+    summary_path.write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result, indent=2))
     print(f"summary={summary_path}")
 
 
