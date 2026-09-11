@@ -12,8 +12,8 @@ from pathlib import Path
 from llm_belief.abstract_cache import get_abstracts
 from llm_belief.curation import curate
 from llm_belief.context import (
-    get_uniprot_context,
     load_mesh_terms,
+    load_uniprot_contexts,
 )
 from llm_belief.data import load_pickle_statements
 from llm_belief.llm import LLMClient, OpenAILLMClient
@@ -111,6 +111,7 @@ def run_one(
     entry,
     abstract_by_pmid,
     mesh_by_pmid,
+    uniprot_by_statement,
     contexts,
 ):
     if not entry["evidence_text"]:
@@ -120,7 +121,9 @@ def run_one(
         )
     context = {}
     if "uniprot" in contexts:
-        context["uniprot_context"] = get_uniprot_context(entry["statement"])
+        context["uniprot_context"] = uniprot_by_statement.get(
+            entry["matches_hash"]
+        )
     if "abstract" in contexts:
         context["abstract"] = (
             abstract_by_pmid.get(int(entry["pmid"])) if entry["pmid"] else None
@@ -253,6 +256,21 @@ def main():
             flush=True,
         )
 
+    if "uniprot" in contexts:
+        print("[setup] preparing UniProt context", flush=True)
+        phase_started = time.perf_counter()
+    uniprot_by_statement = (
+        load_uniprot_contexts(entry["statement"] for entry in entries)
+        if "uniprot" in contexts
+        else {}
+    )
+    if "uniprot" in contexts:
+        print(
+            f"[setup] prepared UniProt context in "
+            f"{time.perf_counter() - phase_started:.1f}s",
+            flush=True,
+        )
+
     print(f"[setup] reading completed results from {output}", flush=True)
     completed = read_completed(output, model)
     pending = [
@@ -260,6 +278,7 @@ def main():
         for entry in entries
         if (entry["matches_hash"], entry["source_hash"]) not in completed
     ]
+    pending.sort(key=lambda entry: (int(entry["pmid"] or 0), entry["matches_hash"]))
     print(
         f"benchmark={len(entries)} completed={len(completed)} pending={len(pending)}",
         flush=True,
@@ -271,8 +290,7 @@ def main():
         else LLMClient(model, args.max_tokens, args.reasoning_effort)
     )
     print(
-        f"[run] starting model requests with {args.workers} workers"
-        + ("; UniProt cache misses are fetched during this phase" if "uniprot" in contexts else ""),
+        f"[run] starting model requests with {args.workers} workers",
         flush=True,
     )
     successful_this_run = 0
@@ -284,6 +302,7 @@ def main():
                 entry,
                 abstract_by_pmid,
                 mesh_by_pmid,
+                uniprot_by_statement,
                 contexts,
             ): entry
             for entry in pending

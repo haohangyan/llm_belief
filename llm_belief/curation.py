@@ -34,6 +34,28 @@ CURATION_SCHEMA = {
     "additionalProperties": False,
 }
 
+_CATEGORY_LIST = "\n".join(f"- {category}" for category in ERROR_CATEGORIES)
+CURATION_INSTRUCTIONS = f"""You are an expert biological curator. Decide whether an
+INDRA statement is supported by its evidence sentence.
+
+RULES
+- Judge only the relation expressed by this evidence.
+- Supporting context is only for resolving ambiguity, not for inferring a relation.
+- Expression or amount changes do not by themselves prove activity changes.
+- Check entity identity, relation type, polarity, negation, hypothesis language,
+  experimental conditions, and modification sites.
+- Use accepted when the extraction is supported, rejected when it is not, and
+  uncertain only when the evidence is genuinely insufficient.
+- When rejected, error_category must be one of:
+{_CATEGORY_LIST}
+
+Return only this JSON shape:
+{{
+  "decision": "accepted | rejected | uncertain",
+  "reasoning": "short explanation",
+  "error_category": "category or null"
+}}"""
+
 
 def build_prompt(
     statement,
@@ -43,7 +65,6 @@ def build_prompt(
     mesh_terms=None,
 ):
     """Build the Gemma curation prompt."""
-    categories = "\n".join(f"- {category}" for category in ERROR_CATEGORIES)
     abstract_context = f"Abstract:\n{abstract}" if abstract else ""
     entity_context = (
         f"UniProt entity context (for grounding only):\n{uniprot_context}"
@@ -58,40 +79,15 @@ def build_prompt(
         if context_parts
         else ""
     )
-    context_rule = (
-        "- Use supporting context only to resolve ambiguity, not to infer a relation."
-        if context_parts
-        else ""
-    )
+    return f"""{CURATION_INSTRUCTIONS}
 
-    return f"""You are an expert biological curator. Decide whether the INDRA
-statement is supported by the evidence sentence.
+{supporting_context}
 
 STATEMENT
 {statement}
 
 EVIDENCE
-{evidence_text}
-
-{supporting_context}
-
-RULES
-- Judge only the relation expressed by this evidence.
-{context_rule}
-- Expression or amount changes do not by themselves prove activity changes.
-- Check entity identity, relation type, polarity, negation, hypothesis language,
-  experimental conditions, and modification sites.
-- Use accepted when the extraction is supported, rejected when it is not, and
-  uncertain only when the evidence is genuinely insufficient.
-- When rejected, error_category must be one of:
-{categories}
-
-Return only this JSON shape:
-{{
-  "decision": "accepted | rejected | uncertain",
-  "reasoning": "short explanation",
-  "error_category": "category or null"
-}}"""
+{evidence_text}"""
 
 
 def curate(

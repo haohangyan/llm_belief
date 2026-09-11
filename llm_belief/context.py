@@ -60,27 +60,34 @@ def _candidate_genes(statement):
     return list(dict.fromkeys(names))
 
 
-def _read_cache(gene):
-    if not UNIPROT_CACHE_PATH.exists():
-        return None
+def _read_cached_uniprot(genes):
+    genes = sorted(set(genes))
+    if not genes or not UNIPROT_CACHE_PATH.exists():
+        return {}
+
+    cached = {}
+    with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
+        for start in range(0, len(genes), 500):
+            batch = genes[start : start + 500]
+            placeholders = ",".join("?" for _ in batch)
+            rows = connection.execute(
+                f"SELECT gene, data FROM entries WHERE gene IN ({placeholders})",
+                batch,
+            )
+            cached.update((gene, json.loads(data)) for gene, data in rows)
+    return cached
+
+
+def _write_cached_uniprot(entries):
+    if not entries:
+        return
     with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS entries (gene TEXT PRIMARY KEY, data TEXT)"
         )
-        row = connection.execute(
-            "SELECT data FROM entries WHERE gene = ?", (gene,)
-        ).fetchone()
-    return json.loads(row[0]) if row else None
-
-
-def _write_cache(gene, data):
-    with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS entries (gene TEXT PRIMARY KEY, data TEXT)"
-        )
-        connection.execute(
+        connection.executemany(
             "INSERT OR REPLACE INTO entries VALUES (?, ?)",
-            (gene, json.dumps(data)),
+            ((gene, json.dumps(data)) for gene, data in entries.items()),
         )
 
 
@@ -134,17 +141,12 @@ def _fetch_uniprot(gene):
     }
 
 
-def get_uniprot_context(statement):
+def _format_uniprot_context(genes, entries):
     lines = []
-    for gene in _candidate_genes(statement):
-        data = _read_cache(gene)
-        if data is None:
-            try:
-                data = _fetch_uniprot(gene)
-            except Exception:
-                continue
-            _write_cache(gene, data)
-
+    for gene in genes:
+        data = entries.get(gene)
+        if not data:
+            continue
         if data.get("error"):
             continue
         lines.append(
@@ -154,3 +156,31 @@ def get_uniprot_context(statement):
             f"  Function: {data.get('function') or 'N/A'}"
         )
     return "\n".join(lines) or None
+
+
+def load_uniprot_contexts(statements):
+    """Prepare UniProt context before inference, keyed by statement hash."""
+    genes_by_hash = {
+        statement.get_hash(): _candidate_genes(statement) for statement in statements
+    }
+    genes = {gene for names in genes_by_hash.values() for gene in names}
+    entries = _read_cached_uniprot(genes)
+
+    downloaded = {}
+    for gene in sorted(genes - set(entries)):
+        try:
+            downloaded[gene] = _fetch_uniprot(gene)
+        except Exception:
+            continue
+    _write_cached_uniprot(downloaded)
+    entries.update(downloaded)
+
+    return {
+        statement_hash: _format_uniprot_context(names, entries)
+        for statement_hash, names in genes_by_hash.items()
+    }
+
+
+def get_uniprot_context(statement):
+    """Return UniProt context for one statement."""
+    return load_uniprot_contexts([statement]).get(statement.get_hash())
