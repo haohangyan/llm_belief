@@ -9,10 +9,8 @@ import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 from pathlib import Path
 
-from indra.literature import pmc_client
 from indra.statements import stmt_from_json
 from indra_db.readonly_dumping.util import clean_json_loads
 from tqdm import tqdm
@@ -21,6 +19,8 @@ from llm_belief.abstract_cache import get_abstracts
 from llm_belief.context import load_mesh_terms, load_uniprot_contexts
 from llm_belief.curation import curate
 from llm_belief.llm import LLMClient
+from llm_belief.locations import PMCID_TO_PMID_PATH
+from llm_belief.pmcid_map import normalize_pmcid
 
 
 DATA_DIRECTORY = Path("/scratch/h.yan/data")
@@ -33,19 +33,12 @@ REASONING_EFFORT = "low"
 MAX_TOKENS = 512
 
 
-@lru_cache(maxsize=None)
-def pmcid_to_pmid(pmcid):
-    ids = pmc_client.id_lookup(str(pmcid), idtype="pmcid")
-    pmid = ids.get("pmid")
-    return int(pmid) if pmid else None
-
-
-def evidence_pmid(evidence):
+def evidence_pmid(evidence, pmcid_to_pmid):
     pmid = evidence.pmid or evidence.text_refs.get("PMID")
     if not pmid:
         pmcid = evidence.text_refs.get("PMCID")
         if pmcid:
-            return pmcid_to_pmid(pmcid)
+            return pmcid_to_pmid.get(normalize_pmcid(pmcid))
     try:
         return int(pmid) if pmid else None
     except ValueError:
@@ -55,6 +48,13 @@ def evidence_pmid(evidence):
 def load_gene_entries():
     with GENE_HASHES_PATH.open("rb") as file:
         gene_hashes = {int(value) for value in pickle.load(file)}
+    if not PMCID_TO_PMID_PATH.exists():
+        raise FileNotFoundError(
+            f"{PMCID_TO_PMID_PATH}; run python -m llm_belief.pmcid_map first"
+        )
+    with PMCID_TO_PMID_PATH.open("rb") as file:
+        pmcid_to_pmid = pickle.load(file)
+    print(f"[load] PMCID-to-PMID mappings={len(pmcid_to_pmid):,}", flush=True)
 
     if not PROCESSED_STATEMENTS_PATH.exists():
         raise FileNotFoundError(PROCESSED_STATEMENTS_PATH)
@@ -86,7 +86,7 @@ def load_gene_entries():
             statements_loaded += 1
             for evidence in statement.evidence:
                 if evidence.text:
-                    pmid = evidence_pmid(evidence)
+                    pmid = evidence_pmid(evidence, pmcid_to_pmid)
                     entries_by_pmid[pmid].append(
                         {
                             "stmt_hash": stmt_hash,
