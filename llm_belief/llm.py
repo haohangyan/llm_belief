@@ -1,9 +1,14 @@
 """Small OpenAI-compatible interface for local or H200-hosted models."""
 
 import json
+import logging
 import os
 
 from openai import OpenAI
+
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 
 
 class LLMClient:
