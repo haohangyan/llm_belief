@@ -23,7 +23,7 @@ from llm_belief.llm import LLMClient
 
 DATA_DIRECTORY = Path("/scratch/h.yan/data")
 GENE_HASHES_PATH = DATA_DIRECTORY / "gene_stmt_hashes.pkl"
-INPUT_PATTERN = "processed_statements.*.*.tsv.gz"
+PROCESSED_STATEMENTS_PATH = DATA_DIRECTORY / "processed_statements.tsv.gz"
 RESULTS_PATH = DATA_DIRECTORY / "gene_curation_results.jsonl"
 
 MODEL = "openai/gpt-oss-120b"
@@ -43,49 +43,52 @@ def load_gene_entries():
     with GENE_HASHES_PATH.open("rb") as file:
         gene_hashes = {int(value) for value in pickle.load(file)}
 
-    paths = sorted(DATA_DIRECTORY.glob(INPUT_PATTERN))
-    if not paths:
-        raise FileNotFoundError(f"No files matched {DATA_DIRECTORY / INPUT_PATTERN}")
+    if not PROCESSED_STATEMENTS_PATH.exists():
+        raise FileNotFoundError(PROCESSED_STATEMENTS_PATH)
 
     csv.field_size_limit(sys.maxsize)
     entries_by_pmid = defaultdict(list)
     statements_loaded = 0
     evidence_count = 0
-    for path in paths:
-        with gzip.open(path, "rt", encoding="utf-8", newline="") as file:
-            rows = tqdm(
-                csv.reader(file, delimiter="\t"),
-                desc=f"Loading {path.name}",
-                unit="stmt",
-                unit_scale=True,
-            )
-            for row_number, row in enumerate(rows, 1):
-                if len(row) != 2:
-                    raise ValueError(f"{path}:{row_number}: expected two TSV columns")
-                stmt_hash, stmt_json = int(row[0]), row[1]
-                if stmt_hash not in gene_hashes:
-                    continue
-
-                statement = stmt_from_json(clean_json_loads(stmt_json))
-                statements_loaded += 1
-                for evidence in statement.evidence:
-                    if evidence.text:
-                        pmid = evidence_pmid(evidence)
-                        entries_by_pmid[pmid].append(
-                            {
-                                "stmt_hash": stmt_hash,
-                                "statement": statement,
-                                "evidence_text": evidence.text,
-                                "pmid": pmid,
-                            }
-                        )
-                        evidence_count += 1
-
-        print(
-            f"[load] gene_statements={statements_loaded:,} "
-            f"evidences={evidence_count:,}",
-            flush=True,
+    with gzip.open(
+        PROCESSED_STATEMENTS_PATH, "rt", encoding="utf-8", newline=""
+    ) as file:
+        rows = tqdm(
+            csv.reader(file, delimiter="\t"),
+            desc=f"Loading {PROCESSED_STATEMENTS_PATH.name}",
+            unit="stmt",
+            unit_scale=True,
         )
+        for row_number, row in enumerate(rows, 1):
+            if len(row) != 2:
+                raise ValueError(
+                    f"{PROCESSED_STATEMENTS_PATH}:{row_number}: "
+                    "expected two TSV columns"
+                )
+            stmt_hash, stmt_json = int(row[0]), row[1]
+            if stmt_hash not in gene_hashes:
+                continue
+
+            statement = stmt_from_json(clean_json_loads(stmt_json))
+            statements_loaded += 1
+            for evidence in statement.evidence:
+                if evidence.text:
+                    pmid = evidence_pmid(evidence)
+                    entries_by_pmid[pmid].append(
+                        {
+                            "stmt_hash": stmt_hash,
+                            "statement": statement,
+                            "evidence_text": evidence.text,
+                            "pmid": pmid,
+                        }
+                    )
+                    evidence_count += 1
+
+    print(
+        f"[load] gene_statements={statements_loaded:,} "
+        f"evidences={evidence_count:,}",
+        flush=True,
+    )
 
     return entries_by_pmid, evidence_count
 
