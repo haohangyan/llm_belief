@@ -3,9 +3,12 @@
 import json
 import re
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode
 from urllib.request import urlopen
+
+from tqdm import tqdm
 
 from llm_belief.locations import (
     INDRA_DB_LITE_PATH,
@@ -117,6 +120,8 @@ def _load_uniprot_entries():
     if _UNIPROT_ENTRIES is not None:
         return _UNIPROT_ENTRIES
 
+    started = time.perf_counter()
+    tqdm.write(f"[uniprot] loading cache from {UNIPROT_CACHE_PATH}")
     UNIPROT_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
         connection.execute(
@@ -126,6 +131,10 @@ def _load_uniprot_entries():
             gene: json.loads(data)
             for gene, data in connection.execute("SELECT gene, data FROM entries")
         }
+    tqdm.write(
+        f"[uniprot] loaded={len(_UNIPROT_ENTRIES):,} "
+        f"elapsed={time.perf_counter() - started:.1f}s"
+    )
     return _UNIPROT_ENTRIES
 
 
@@ -138,21 +147,50 @@ def _fetch_safely(gene):
 
 def _add_missing_uniprot(genes, entries):
     missing = genes - entries.keys()
+    tqdm.write(
+        f"[uniprot] genes={len(genes):,} "
+        f"cached={len(genes) - len(missing):,} missing={len(missing):,}"
+    )
     if not missing:
         return
 
-    with ThreadPoolExecutor(max_workers=min(16, len(missing))) as pool:
-        downloaded = dict(pool.map(_fetch_safely, missing))
-    entries.update(downloaded)
-
-    successful = {
-        gene: data for gene, data in downloaded.items() if not data.get("error")
-    }
-    with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
-        connection.executemany(
-            "INSERT OR REPLACE INTO entries VALUES (?, ?)",
-            ((gene, json.dumps(data)) for gene, data in successful.items()),
-        )
+    started = time.perf_counter()
+    saved = 0
+    failed = 0
+    pending = []
+    with (
+        ThreadPoolExecutor(max_workers=min(16, len(missing))) as pool,
+        sqlite3.connect(UNIPROT_CACHE_PATH) as connection,
+    ):
+        futures = [pool.submit(_fetch_safely, gene) for gene in missing]
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Fetching UniProt",
+            unit="gene",
+        ):
+            gene, data = future.result()
+            entries[gene] = data
+            if data.get("error"):
+                failed += 1
+                continue
+            pending.append((gene, json.dumps(data)))
+            saved += 1
+            if len(pending) >= 100:
+                connection.executemany(
+                    "INSERT OR REPLACE INTO entries VALUES (?, ?)", pending
+                )
+                connection.commit()
+                pending.clear()
+        if pending:
+            connection.executemany(
+                "INSERT OR REPLACE INTO entries VALUES (?, ?)", pending
+            )
+            connection.commit()
+    tqdm.write(
+        f"[uniprot] saved={saved:,} failed={failed:,} "
+        f"elapsed={time.perf_counter() - started:.1f}s"
+    )
 
 
 def _strip_pubmed_citations(text):
