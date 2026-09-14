@@ -66,11 +66,7 @@ def build_prompt(
 ):
     """Build the Gemma curation prompt."""
     abstract_context = f"Abstract:\n{abstract}" if abstract else ""
-    entity_context = (
-        f"UniProt entity context (for grounding only):\n{uniprot_context}"
-        if uniprot_context
-        else ""
-    )
+    entity_context = uniprot_context or ""
     mesh_context = f"MeSH terms: {', '.join(mesh_terms)}" if mesh_terms else ""
     context_parts = [abstract_context, mesh_context, entity_context]
     context_parts = [part for part in context_parts if part]

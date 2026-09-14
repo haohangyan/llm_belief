@@ -9,8 +9,10 @@ import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from pathlib import Path
 
+from indra.literature import pmc_client
 from indra.statements import stmt_from_json
 from indra_db.readonly_dumping.util import clean_json_loads
 from tqdm import tqdm
@@ -31,8 +33,19 @@ REASONING_EFFORT = "low"
 MAX_TOKENS = 512
 
 
+@lru_cache(maxsize=None)
+def pmcid_to_pmid(pmcid):
+    ids = pmc_client.id_lookup(str(pmcid), idtype="pmcid")
+    pmid = ids.get("pmid")
+    return int(pmid) if pmid else None
+
+
 def evidence_pmid(evidence):
     pmid = evidence.pmid or evidence.text_refs.get("PMID")
+    if not pmid:
+        pmcid = evidence.text_refs.get("PMCID")
+        if pmcid:
+            return pmcid_to_pmid(pmcid)
     try:
         return int(pmid) if pmid else None
     except ValueError:
@@ -146,13 +159,19 @@ def run(entries_by_pmid, evidence_count, workers, chunk_size):
     ):
         for chunk in iter_chunks(entries_by_pmid, chunk_size):
             pmids = {entry["pmid"] for entry in chunk if entry["pmid"]}
+            tqdm.write(
+                f"[context] chunk={len(chunk):,} PMIDs={len(pmids):,}"
+            )
             abstracts, _ = get_abstracts(pmids)
+            tqdm.write("[context] loading MeSH")
             mesh_terms = load_mesh_terms(pmids)
 
             statements = {
                 entry["stmt_hash"]: entry["statement"] for entry in chunk
             }
+            tqdm.write("[context] loading UniProt")
             uniprot_contexts = load_uniprot_contexts(statements.values())
+            tqdm.write("[run] sending requests to vLLM")
 
             futures = {
                 pool.submit(

@@ -3,6 +3,7 @@
 import json
 import re
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -60,37 +61,6 @@ def _candidate_genes(statement):
     return list(dict.fromkeys(names))
 
 
-def _read_cached_uniprot(genes):
-    genes = sorted(set(genes))
-    if not genes or not UNIPROT_CACHE_PATH.exists():
-        return {}
-
-    cached = {}
-    with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
-        for start in range(0, len(genes), 500):
-            batch = genes[start : start + 500]
-            placeholders = ",".join("?" for _ in batch)
-            rows = connection.execute(
-                f"SELECT gene, data FROM entries WHERE gene IN ({placeholders})",
-                batch,
-            )
-            cached.update((gene, json.loads(data)) for gene, data in rows)
-    return cached
-
-
-def _write_cached_uniprot(entries):
-    if not entries:
-        return
-    with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS entries (gene TEXT PRIMARY KEY, data TEXT)"
-        )
-        connection.executemany(
-            "INSERT OR REPLACE INTO entries VALUES (?, ?)",
-            ((gene, json.dumps(data)) for gene, data in entries.items()),
-        )
-
-
 def _fetch_uniprot(gene):
     params = urlencode({
         "query": f"gene:{gene}",
@@ -104,18 +74,16 @@ def _fetch_uniprot(gene):
         results = json.load(response).get("results", [])
 
     if not results:
-        return {"error": f"No UniProt entry found for {gene}"}
+        return {"error": f"No UniProt entry found for gene: {gene}"}
 
     result = results[0]
-    genes = result.get("genes", [])
     gene_names = []
-    for item in genes:
-        gene_names.extend(
-            value.get("value")
-            for key in ("geneName", "synonyms", "orderedLocusNames", "orfNames")
-            for value in ([item.get(key)] if key == "geneName" else item.get(key, []))
-            if value and value.get("value")
-        )
+    for item in result.get("genes", []):
+        for key in ("geneName", "synonyms", "orderedLocusNames", "orfNames"):
+            values = [item.get(key)] if key == "geneName" else item.get(key, [])
+            gene_names.extend(
+                value["value"] for value in values if value and value.get("value")
+            )
 
     description = result.get("proteinDescription", {})
     recommended = description.get("recommendedName", {})
@@ -141,43 +109,97 @@ def _fetch_uniprot(gene):
     }
 
 
+_UNIPROT_ENTRIES = None
+
+
+def _load_uniprot_entries():
+    global _UNIPROT_ENTRIES
+    if _UNIPROT_ENTRIES is not None:
+        return _UNIPROT_ENTRIES
+
+    UNIPROT_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS entries (gene TEXT PRIMARY KEY, data TEXT)"
+        )
+        _UNIPROT_ENTRIES = {
+            gene: json.loads(data)
+            for gene, data in connection.execute("SELECT gene, data FROM entries")
+        }
+    return _UNIPROT_ENTRIES
+
+
+def _fetch_safely(gene):
+    try:
+        return gene, _fetch_uniprot(gene)
+    except Exception as error:
+        return gene, {"error": str(error)}
+
+
+def _add_missing_uniprot(genes, entries):
+    missing = genes - entries.keys()
+    if not missing:
+        return
+
+    with ThreadPoolExecutor(max_workers=min(16, len(missing))) as pool:
+        downloaded = dict(pool.map(_fetch_safely, missing))
+    entries.update(downloaded)
+
+    successful = {
+        gene: data for gene, data in downloaded.items() if not data.get("error")
+    }
+    with sqlite3.connect(UNIPROT_CACHE_PATH) as connection:
+        connection.executemany(
+            "INSERT OR REPLACE INTO entries VALUES (?, ?)",
+            ((gene, json.dumps(data)) for gene, data in successful.items()),
+        )
+
+
+def _strip_pubmed_citations(text):
+    text = re.sub(r"\s*\((?:PubMed:[0-9]+(?:,\s*PubMed:[0-9]+)*)\)\s*", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _format_uniprot_context(genes, entries):
     lines = []
     for gene in genes:
-        data = entries.get(gene)
-        if not data:
-            continue
+        data = entries.get(gene, {})
         if data.get("error"):
             continue
+        symbol = data.get("gene_name") or "Unknown"
+        gene_synonyms = ", ".join(data.get("gene_synonyms", [])[:12]) or symbol
+        protein_names = ", ".join(data.get("protein_names", [])[:8]) or "N/A"
+        function = data.get("function")
+        function = _strip_pubmed_citations(function) if function else "N/A"
         lines.append(
-            f"- {data['gene_name']}\n"
-            f"  Gene names: {', '.join(data['gene_synonyms'][:12])}\n"
-            f"  Protein names: {', '.join(data['protein_names'][:8])}\n"
-            f"  Function: {data.get('function') or 'N/A'}"
+            f"- {symbol}\n"
+            "  Match note: First UniProt search hit for the queried token "
+            "(limit=1); may be a non-exact match.\n"
+            f"  Gene names/synonyms: {gene_synonyms}\n"
+            f"  Protein names/synonyms: {protein_names}\n"
+            f"  Function: {function}"
         )
-    return "\n".join(lines) or None
+
+    return f"""ENTITY NORMALIZATION CONTEXT (UniProt; optional)
+Queried gene tokens from statement: {', '.join(genes)}
+For each token, we attached ONLY the first UniProt search result (query: gene:<token>, limit=1).
+This may or may not refer to the exact mentioned entity in the evidence.
+Use this ONLY as tentative grounding/disambiguation context, and do NOT infer relations not present in the evidence.
+
+{chr(10).join(lines)}"""
 
 
 def load_uniprot_contexts(statements):
-    """Prepare UniProt context before inference, keyed by statement hash."""
+    """Build CuraTogether-style UniProt context, keyed by statement hash."""
     genes_by_hash = {
         statement.get_hash(): _candidate_genes(statement) for statement in statements
     }
+    entries = _load_uniprot_entries()
     genes = {gene for names in genes_by_hash.values() for gene in names}
-    entries = _read_cached_uniprot(genes)
-
-    downloaded = {}
-    for gene in sorted(genes - set(entries)):
-        try:
-            downloaded[gene] = _fetch_uniprot(gene)
-        except Exception:
-            continue
-    _write_cached_uniprot(downloaded)
-    entries.update(downloaded)
-
+    _add_missing_uniprot(genes, entries)
     return {
-        statement_hash: _format_uniprot_context(names, entries)
-        for statement_hash, names in genes_by_hash.items()
+        statement_hash: _format_uniprot_context(genes, entries) if genes else None
+        for statement_hash, genes in genes_by_hash.items()
     }
 
 
