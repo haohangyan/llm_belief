@@ -26,7 +26,8 @@ from llm_belief.pmcid_map import normalize_pmcid
 DATA_DIRECTORY = Path("/scratch/h.yan/data")
 GENE_HASHES_PATH = DATA_DIRECTORY / "gene_stmt_hashes.pkl"
 PROCESSED_STATEMENTS_PATH = DATA_DIRECTORY / "processed_statements.tsv.gz"
-RESULTS_PATH = DATA_DIRECTORY / "gene_curation_results.jsonl"
+RESULTS_DIRECTORY = DATA_DIRECTORY / "gene_curation_results"
+RESULTS_PER_FILE = 100_000
 
 MODEL = "openai/gpt-oss-120b"
 REASONING_EFFORT = "low"
@@ -149,65 +150,87 @@ def run(entries_by_pmid, evidence_count, workers, chunk_size):
     finished = 0
     failed = 0
     started = time.perf_counter()
+    run_directory = RESULTS_DIRECTORY / time.strftime("%Y%m%d_%H%M%S")
+    run_directory.mkdir(parents=True)
+    output_file = None
 
-    with (
-        RESULTS_PATH.open(
-            "w", encoding="utf-8", buffering=1024 * 1024
-        ) as output_file,
-        ThreadPoolExecutor(max_workers=workers) as pool,
-        tqdm(total=evidence_count, desc="Curating", unit="evidence") as progress,
-    ):
-        for chunk in iter_chunks(entries_by_pmid, chunk_size):
-            pmids = {entry["pmid"] for entry in chunk if entry["pmid"]}
-            tqdm.write(
-                f"[context] chunk={len(chunk):,} PMIDs={len(pmids):,}"
-            )
-            abstracts, _ = get_abstracts(pmids)
-            tqdm.write("[context] loading MeSH")
-            mesh_terms = load_mesh_terms(pmids)
+    try:
+        with (
+            ThreadPoolExecutor(max_workers=workers) as pool,
+            tqdm(total=evidence_count, desc="Curating", unit="evidence") as progress,
+        ):
+            for chunk in iter_chunks(entries_by_pmid, chunk_size):
+                pmids = {entry["pmid"] for entry in chunk if entry["pmid"]}
+                tqdm.write(
+                    f"[context] chunk={len(chunk):,} PMIDs={len(pmids):,}"
+                )
+                abstracts, _ = get_abstracts(pmids)
+                tqdm.write("[context] loading MeSH")
+                mesh_terms = load_mesh_terms(pmids)
 
-            statements = {
-                entry["stmt_hash"]: entry["statement"] for entry in chunk
-            }
-            tqdm.write("[context] loading UniProt")
-            uniprot_contexts = load_uniprot_contexts(statements.values())
-            tqdm.write("[run] sending requests to vLLM")
+                statements = {
+                    entry["stmt_hash"]: entry["statement"] for entry in chunk
+                }
+                tqdm.write("[context] loading UniProt")
+                uniprot_contexts = load_uniprot_contexts(statements.values())
+                tqdm.write("[run] sending requests to vLLM")
 
-            futures = {
-                pool.submit(
-                    process_one,
-                    client,
-                    entry,
-                    abstracts,
-                    mesh_terms,
-                    uniprot_contexts,
-                ): entry
-                for entry in chunk
-            }
-            for future in as_completed(futures):
-                entry = futures[future]
-                try:
-                    result = future.result()
-                except Exception as error:
-                    failed += 1
-                    print(
-                        f"error {entry['stmt_hash']}: {error}",
-                        flush=True,
-                    )
-                    continue
-                output_file.write(json.dumps(result, ensure_ascii=False) + "\n")
-                finished += 1
+                futures = {
+                    pool.submit(
+                        process_one,
+                        client,
+                        entry,
+                        abstracts,
+                        mesh_terms,
+                        uniprot_contexts,
+                    ): entry
+                    for entry in chunk
+                }
+                for future in as_completed(futures):
+                    entry = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as error:
+                        failed += 1
+                        print(
+                            f"error {entry['stmt_hash']}: {error}",
+                            flush=True,
+                        )
+                        progress.update(1)
+                        continue
+                    if finished % RESULTS_PER_FILE == 0:
+                        if output_file:
+                            output_file.close()
+                        part = finished // RESULTS_PER_FILE + 1
+                        output_path = run_directory / f"results_{part:04d}.jsonl"
+                        output_file = output_path.open(
+                            "w", encoding="utf-8", buffering=1024 * 1024
+                        )
+                        tqdm.write(f"[output] writing {output_path}")
+                    output_file.write(json.dumps(result, ensure_ascii=False) + "\n")
+                    finished += 1
+                    progress.update(1)
+                    if (finished + failed) % 100 == 0:
+                        elapsed = time.perf_counter() - started
+                        progress.set_postfix(
+                            finished=f"{finished:,}",
+                            failed=f"{failed:,}",
+                            rate=f"{finished / elapsed:.2f}/s",
+                        )
 
-            output_file.flush()
-            elapsed = time.perf_counter() - started
-            progress.update(len(chunk))
-            progress.set_postfix(
-                finished=f"{finished:,}",
-                failed=f"{failed:,}",
-                rate=f"{finished / elapsed:.2f}/s",
-            )
+                if output_file:
+                    output_file.flush()
+                elapsed = time.perf_counter() - started
+                progress.set_postfix(
+                    finished=f"{finished:,}",
+                    failed=f"{failed:,}",
+                    rate=f"{finished / elapsed:.2f}/s",
+                )
+    finally:
+        if output_file:
+            output_file.close()
 
-    print(f"[done] output={RESULTS_PATH}")
+    print(f"[done] output={run_directory}")
 
 
 def main():
