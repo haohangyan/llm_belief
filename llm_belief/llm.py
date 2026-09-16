@@ -15,12 +15,18 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 class LLMClient:
     """Chat-completion client shared by local development and vLLM on H200."""
 
-    def __init__(self, model, max_tokens=1024, reasoning_effort=None):
+    def __init__(
+        self,
+        model,
+        max_tokens=1024,
+        reasoning_effort=None,
+        base_url="http://127.0.0.1:8000/v1",
+    ):
         self.model = model
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         self._client = OpenAI(
-            base_url="http://127.0.0.1:8000/v1",
+            base_url=base_url,
             api_key="not-needed",
         )
 

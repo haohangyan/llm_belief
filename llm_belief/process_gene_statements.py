@@ -148,8 +148,17 @@ def process_one(client, entry, abstracts, mesh_terms, uniprot_contexts):
     }
 
 
-def run(entries_by_pmid, evidence_count, workers, chunk_size):
-    client = LLMClient(MODEL, MAX_TOKENS, REASONING_EFFORT)
+def run(entries_by_pmid, evidence_count, workers, chunk_size, servers):
+    clients = [
+        LLMClient(
+            MODEL,
+            MAX_TOKENS,
+            REASONING_EFFORT,
+            base_url=server,
+        )
+        for server in servers
+    ]
+    print(f"[setup] vLLM servers={', '.join(servers)}", flush=True)
     finished = 0
     failed = 0
     started = time.perf_counter()
@@ -181,13 +190,13 @@ def run(entries_by_pmid, evidence_count, workers, chunk_size):
                 futures = {
                     pool.submit(
                         process_one,
-                        client,
+                        clients[index % len(clients)],
                         entry,
                         abstracts,
                         mesh_terms,
                         uniprot_contexts,
                     ): entry
-                    for entry in chunk
+                    for index, entry in enumerate(chunk)
                 }
                 for future in as_completed(futures):
                     entry = futures[future]
@@ -240,7 +249,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=5_000)
+    parser.add_argument(
+        "--server",
+        action="append",
+        help="vLLM base URL; repeat for multiple servers",
+    )
     args = parser.parse_args()
+    servers = args.server or ["http://127.0.0.1:8000/v1"]
 
     entries_by_pmid, evidence_count = load_gene_entries()
     print(
@@ -248,7 +263,13 @@ def main():
         f"total evidences={evidence_count:,}",
         flush=True,
     )
-    run(entries_by_pmid, evidence_count, args.workers, args.chunk_size)
+    run(
+        entries_by_pmid,
+        evidence_count,
+        args.workers,
+        args.chunk_size,
+        servers,
+    )
 
 
 if __name__ == "__main__":
