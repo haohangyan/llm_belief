@@ -94,6 +94,31 @@ def score(rows, gold):
     gold_for = lambda row: gold[(row["matches_hash"], row["source_hash"])]
     exact = sum(row["prediction"] == gold_for(row) for row in predicted)
     total = len(gold)
+    class_metrics = {}
+    for label in ("correct", "incorrect"):
+        true_positive = sum(
+            row["prediction"] == label and gold_for(row) == label
+            for row in predicted
+        )
+        predicted_positive = sum(
+            row["prediction"] == label for row in predicted
+        )
+        actual_positive = sum(value == label for value in gold.values())
+        precision = (
+            true_positive / predicted_positive if predicted_positive else None
+        )
+        recall = true_positive / actual_positive if actual_positive else None
+        class_metrics[label] = {
+            "precision": precision,
+            "recall": recall,
+            "f1": (
+                2 * precision * recall / (precision + recall)
+                if precision is not None
+                and recall is not None
+                and precision + recall
+                else None
+            ),
+        }
     return {
         "total": total,
         "samples": len(predicted),
@@ -103,6 +128,7 @@ def score(rows, gold):
         "accuracy": exact / len(predicted) if predicted else None,
         "overall_accuracy": exact / total if total else None,
         "coverage": len(decided) / len(predicted) if predicted else None,
+        "class_metrics": class_metrics,
     }
 
 
