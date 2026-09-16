@@ -41,7 +41,16 @@ INDRA statement is supported by its evidence sentence.
 RULES
 - Judge only the relation expressed by this evidence.
 - Supporting context is only for resolving ambiguity, not for inferring a relation.
-- Expression or amount changes do not by themselves prove activity changes.
+- Use UniProt gene/protein synonyms to match evidence names; synonyms identify
+  entities but do not establish relations.
+- In modification statements, None means the enzyme/regulator is unspecified,
+  not missing. Phosphorylation(None, X) is supported if X is phosphorylated.
+- Statements may summarize aggregate mechanisms. Compose direction carefully:
+  if inhibiting A blocks activation of B, A activates rather than inhibits B;
+  if A inhibits B phosphorylation, this can support Dephosphorylation(A, B).
+- Match relation type: mRNA/protein expression or abundance supports
+  IncreaseAmount/DecreaseAmount; functional activity supports
+  Activation/Inhibition.
 - Check entity identity, relation type, polarity, negation, hypothesis language,
   experimental conditions, and modification sites.
 - Use accepted when the extraction is supported, rejected when it is not, and

@@ -91,6 +91,7 @@ def load_gene_entries():
                     entries_by_pmid[pmid].append(
                         {
                             "stmt_hash": stmt_hash,
+                            "source_hash": evidence.get_source_hash(),
                             "statement": statement,
                             "evidence_text": evidence.text,
                             "pmid": pmid,
@@ -138,9 +139,11 @@ def process_one(client, entry, abstracts, mesh_terms, uniprot_contexts):
     }[result["decision"]]
     return {
         "statement_hash": entry["stmt_hash"],
+        "source_hash": entry["source_hash"],
         "statement": str(entry["statement"]),
         "evidence_text": entry["evidence_text"],
         "judgment": judgment,
+        "error_category": result.get("error_category"),
         "explanation": result.get("reasoning", ""),
     }
 
