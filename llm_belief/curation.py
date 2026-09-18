@@ -8,8 +8,6 @@ ERROR_CATEGORIES = (
     "Wrong Relation",
     "Activity vs. Amount",
     "Polarity",
-    "Negative Result",
-    "Hypothesis",
     "Agent Conditions",
     "Modification Site",
     "Other",
@@ -39,22 +37,33 @@ CURATION_INSTRUCTIONS = f"""You are an expert biological curator. Decide whether
 INDRA statement is supported by its evidence sentence.
 
 RULES
-- Judge only the relation expressed by this evidence.
+- Before deciding, identify the statement's relation type, subject, and object,
+  then compare the evidence with that exact meaning.
+- Judge whether the evidence discusses the stated relation; positive experimental
+  confirmation is not required. A relation may be tested, proposed, reduced,
+  blocked, or unchanged, but its entities, direction, and relation type must match.
 - Supporting context is only for resolving ambiguity, not for inferring a relation.
 - Use UniProt gene/protein synonyms to match evidence names; synonyms identify
   entities but do not establish relations.
-- In modification statements, None means the enzyme/regulator is unspecified,
-  not missing. Phosphorylation(None, X) is supported if X is phosphorylated.
-- For directed relations, Relation(A, B) means A affects or modifies B; do not
-  reverse them. Complex(A, B) is symmetric and has no causal direction.
-- Statements may summarize aggregate mechanisms. Compose direction carefully:
-  if inhibiting A blocks activation of B, A activates rather than inhibits B;
-  if A inhibits B phosphorylation, this can support Dephosphorylation(A, B).
+- For directed binary statements, Relation(A, B) means A affects or modifies B;
+  evidence that B affects A does not match. Complex is symmetric and has no
+  causal direction.
 - Match relation type exactly. Promoter activity, transcription, expression,
-  production, abundance, or stability supports IncreaseAmount/DecreaseAmount,
-  not Activation/Inhibition; the latter requires functional activity.
-- Check entity identity, relation type, polarity, negation, hypothesis language,
-  experimental conditions, and modification sites.
+  production, abundance, stability, or degradation supports
+  IncreaseAmount/DecreaseAmount. Activation/Inhibition requires a change in the
+  object's functional activity; expression, secretion, or localization alone is
+  not activity.
+- A statement may summarize an aggregate causal mechanism; direct biochemical
+  contact is not required. In Phosphorylation(A, B), A may be an upstream cause
+  and need not be the kinase if the evidence says A induces B phosphorylation.
+  Compose polarity carefully: if inhibiting A blocks activation of B, A activates
+  B; if A inhibits B phosphorylation, this can support Dephosphorylation(A, B).
+- In modification statements, None means the enzyme or regulator is unspecified,
+  not missing. Phosphorylation(None, X) is supported when X phosphorylation is
+  discussed.
+- Check mutation, modification, activity, location, and site conditions only when
+  they are encoded in the statement. A general statement can be supported by
+  evidence about a more specific form of the same entity.
 - Use accepted when the extraction is supported, rejected when it is not, and
   uncertain only when the evidence is genuinely insufficient.
 - When rejected, error_category must be one of:
