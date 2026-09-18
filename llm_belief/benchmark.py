@@ -134,6 +134,42 @@ def score(rows, gold):
     }
 
 
+def write_disagreement_sample(rows, entries, gold, output, seed):
+    entries_by_pair = {
+        (entry["matches_hash"], entry["source_hash"]): entry
+        for entry in entries
+    }
+    disagreements = []
+    for row in rows:
+        pair = (row["matches_hash"], row["source_hash"])
+        label = gold[pair]
+        if row["prediction"] == label:
+            continue
+        entry = entries_by_pair[pair]
+        disagreements.append(
+            {
+                "statement_hash": row["matches_hash"],
+                "source_hash": row["source_hash"],
+                "statement": str(entry["statement"]),
+                "evidence_text": entry["evidence_text"],
+                "label": label,
+                "llm_judgment": row["prediction"],
+                "error_category": row.get("error_category"),
+                "explanation": row.get("reasoning", ""),
+            }
+        )
+
+    sample_size = min(100, len(disagreements))
+    sample = random.Random(seed).sample(disagreements, sample_size)
+    review_output = output.with_name(
+        f"{output.stem}_disagreements_100.jsonl"
+    )
+    with review_output.open("w", encoding="utf-8") as file:
+        for row in sample:
+            file.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return review_output, len(disagreements), sample_size
+
+
 def run_one(
     client,
     entry,
@@ -357,6 +393,15 @@ def main():
         if (entry["matches_hash"], entry["source_hash"]) in completed
     ]
     summary = score(rows, gold)
+    review_output, disagreement_count, review_count = write_disagreement_sample(
+        rows,
+        entries,
+        gold,
+        output,
+        args.seed,
+    )
+    summary["disagreements"] = disagreement_count
+    summary["review_sample_size"] = review_count
     if abstract_stats:
         summary["abstracts"] = abstract_stats
     elapsed_seconds = time.perf_counter() - started_at
@@ -365,6 +410,7 @@ def main():
     summary["elapsed"] = str(timedelta(seconds=round(elapsed_seconds)))
     print(json.dumps(summary, indent=2))
     print(f"results={output}")
+    print(f"disagreement_sample={review_output}")
 
 
 if __name__ == "__main__":
