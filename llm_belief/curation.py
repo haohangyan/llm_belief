@@ -77,6 +77,36 @@ Return only this JSON shape:
 }}"""
 
 
+def statement_specific_instruction(statement):
+    statement_type = type(statement).__name__
+    if isinstance(statement, str):
+        statement_type = statement.split("(", 1)[0]
+
+    agents = statement.agent_list() if hasattr(statement, "agent_list") else []
+    subject = agents[0].name if len(agents) > 0 and agents[0] else "the subject"
+    object_ = agents[1].name if len(agents) > 1 and agents[1] else "the object"
+
+    meanings = {
+        "Activation": (
+            f"{subject} -> {object_} functional activity (positive regulation). "
+            "Expression or abundance alone does not match."
+        ),
+        "Inhibition": (
+            f"{subject} -> {object_} functional activity (negative regulation). "
+            "Reduced expression or abundance alone does not match."
+        ),
+        "IncreaseAmount": (
+            f"{subject} -> {object_} amount, expression, production, or stability "
+            "(positive regulation). Functional activity alone does not match."
+        ),
+        "DecreaseAmount": (
+            f"{subject} -> {object_} amount, expression, production, or stability "
+            "(negative regulation). Functional inhibition alone does not match."
+        ),
+    }
+    return meanings.get(statement_type)
+
+
 def build_prompt(
     statement,
     evidence_text,
@@ -95,12 +125,18 @@ def build_prompt(
         if context_parts
         else ""
     )
+    target_meaning = statement_specific_instruction(statement)
+    target_section = (
+        f"TARGET MEANING\n{target_meaning}" if target_meaning else ""
+    )
     return f"""{CURATION_INSTRUCTIONS}
 
 {supporting_context}
 
 STATEMENT
 {statement}
+
+{target_section}
 
 EVIDENCE
 {evidence_text}"""
