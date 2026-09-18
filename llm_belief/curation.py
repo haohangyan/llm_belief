@@ -45,12 +45,14 @@ RULES
   entities but do not establish relations.
 - In modification statements, None means the enzyme/regulator is unspecified,
   not missing. Phosphorylation(None, X) is supported if X is phosphorylated.
+- For directed relations, Relation(A, B) means A affects or modifies B; do not
+  reverse them. Complex(A, B) is symmetric and has no causal direction.
 - Statements may summarize aggregate mechanisms. Compose direction carefully:
   if inhibiting A blocks activation of B, A activates rather than inhibits B;
   if A inhibits B phosphorylation, this can support Dephosphorylation(A, B).
-- Match relation type: mRNA/protein expression or abundance supports
-  IncreaseAmount/DecreaseAmount; functional activity supports
-  Activation/Inhibition.
+- Match relation type exactly. Promoter activity, transcription, expression,
+  production, abundance, or stability supports IncreaseAmount/DecreaseAmount,
+  not Activation/Inhibition; the latter requires functional activity.
 - Check entity identity, relation type, polarity, negation, hypothesis language,
   experimental conditions, and modification sites.
 - Use accepted when the extraction is supported, rejected when it is not, and
