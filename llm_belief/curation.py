@@ -46,16 +46,12 @@ RULES
 - Use UniProt gene/protein synonyms to match evidence names; synonyms identify
   entities but do not establish relations.
 - For directed binary statements, Relation(A, B) means A affects or modifies B;
-  evidence that B affects A does not match. Complex is symmetric and has no
-  causal direction.
-- Match relation type exactly. Promoter activity, transcription, expression,
-  production, abundance, stability, or degradation supports
-  IncreaseAmount/DecreaseAmount. Activation/Inhibition requires a change in the
-  object's functional activity; expression, secretion, or localization alone is
-  not activity.
-- A statement may summarize an aggregate causal mechanism; direct biochemical
-  contact is not required. In Phosphorylation(A, B), A may be an upstream cause
-  and need not be the kinase if the evidence says A induces B phosphorylation.
+  evidence that B affects A does not match. Match the relation type exactly and
+  follow TARGET MEANING when it is provided.
+- A directed causal or modification statement may summarize an aggregate
+  mechanism; direct biochemical contact is not required. In Phosphorylation(A,
+  B), A may be an upstream cause and need not be the kinase if the evidence says
+  A induces B phosphorylation.
   Compose polarity carefully: if inhibiting A blocks activation of B, A activates
   B; if A inhibits B phosphorylation, this can support Dephosphorylation(A, B).
 - In modification statements, None means the enzyme or regulator is unspecified,
@@ -85,6 +81,7 @@ def statement_specific_instruction(statement):
     agents = statement.agent_list() if hasattr(statement, "agent_list") else []
     subject = agents[0].name if len(agents) > 0 and agents[0] else "the subject"
     object_ = agents[1].name if len(agents) > 1 and agents[1] else "the object"
+    members = ", ".join(agent.name for agent in agents if agent)
 
     meanings = {
         "Activation": (
@@ -102,6 +99,12 @@ def statement_specific_instruction(statement):
         "DecreaseAmount": (
             f"{subject} -> {object_} amount, expression, production, or stability "
             "(negative regulation). Functional inhibition alone does not match."
+        ),
+        "Complex": (
+            f"Physical binding or membership in one molecular complex containing "
+            f"all listed members: {members or 'the listed members'}. Order does not "
+            "matter. Co-expression, co-localization, functional association, or "
+            "separate binding to the same third entity does not match."
         ),
     }
     return meanings.get(statement_type)
