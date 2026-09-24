@@ -2,15 +2,17 @@
 
 
 ERROR_CATEGORIES = (
-    "Entity Boundaries",
-    "Grounding",
-    "No Relation",
-    "Wrong Relation",
-    "Activity vs. Amount",
-    "Polarity",
-    "Agent Conditions",
-    "Modification Site",
-    "Other",
+    "entity_boundaries",
+    "grounding",
+    "no_relation",
+    "wrong_relation",
+    "act_vs_amt",
+    "polarity",
+    "agent_conditions",
+    "mod_site",
+    "hypothesis",
+    "negative_result",
+    "other",
 )
 
 CURATION_SCHEMA = {
@@ -40,8 +42,14 @@ RULES
 - Before deciding, identify the statement's relation type, subject, and object,
   then compare the evidence with that exact meaning.
 - Judge whether the evidence discusses the stated relation; positive experimental
-  confirmation is not required. A relation may be tested, proposed, reduced,
-  blocked, or unchanged, but its entities, direction, and relation type must match.
+  confirmation is not required.
+- If the evidence only raises the relation as a question, test, hypothesis,
+  possibility, or future proposal without reporting a result, use rejected with
+  the hypothesis error category.
+- A relation can still be supported when the evidence says that the relation
+  itself was reduced or blocked by another intervention. Evidence that A had no
+  effect on B does not support either activation or inhibition; use the
+  negative_result error category.
 - Supporting context is only for resolving ambiguity, not for inferring a relation.
 - Use UniProt gene/protein synonyms to match evidence names; synonyms identify
   entities but do not establish relations.
