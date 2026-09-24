@@ -179,7 +179,7 @@ def score(rows, gold, gold_tags=None):
     return summary
 
 
-def write_disagreement_sample(rows, entries, gold, gold_tags, output, seed):
+def write_disagreements(rows, entries, gold, gold_tags, output):
     entries_by_pair = {
         (entry["matches_hash"], entry["source_hash"]): entry
         for entry in entries
@@ -205,15 +205,11 @@ def write_disagreement_sample(rows, entries, gold, gold_tags, output, seed):
             }
         )
 
-    sample_size = min(100, len(disagreements))
-    sample = random.Random(seed).sample(disagreements, sample_size)
-    review_output = output.with_name(
-        f"{output.stem}_disagreements_100.jsonl"
-    )
+    review_output = output.with_name(f"{output.stem}_disagreements.jsonl")
     with review_output.open("w", encoding="utf-8") as file:
-        for row in sample:
+        for row in disagreements:
             file.write(json.dumps(row, ensure_ascii=False) + "\n")
-    return review_output, len(disagreements), sample_size
+    return review_output, len(disagreements)
 
 
 def run_one(
@@ -441,16 +437,14 @@ def main():
         if (entry["matches_hash"], entry["source_hash"]) in completed
     ]
     summary = score(rows, gold, gold_tags)
-    review_output, disagreement_count, review_count = write_disagreement_sample(
+    review_output, disagreement_count = write_disagreements(
         rows,
         entries,
         gold,
         gold_tags,
         output,
-        args.seed,
     )
     summary["disagreements"] = disagreement_count
-    summary["review_sample_size"] = review_count
     if abstract_stats:
         summary["abstracts"] = abstract_stats
     elapsed_seconds = time.perf_counter() - started_at
