@@ -1,6 +1,7 @@
 """Benchmark the Gemma curation workflow against human curations."""
 
 import argparse
+import csv
 import json
 import random
 import time
@@ -10,7 +11,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from llm_belief.abstract_cache import get_abstracts
-from llm_belief.curation import curate
+from llm_belief.curation import ERROR_CATEGORIES, curate
 from llm_belief.context import (
     load_mesh_terms,
     load_uniprot_contexts,
@@ -177,6 +178,25 @@ def score(rows, gold, gold_tags=None):
     if gold_tags is not None:
         summary["by_gold_tag"] = score_by_gold_tag(predicted, gold_tags)
     return summary
+
+
+def write_category_tsv(summary, output):
+    category_output = output.with_name(f"{output.stem}_categories.tsv")
+    categories = ["correct", *ERROR_CATEGORIES]
+    with category_output.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter="\t")
+        writer.writerow(["gold_category", "n", *categories])
+        for gold_tag, tag_summary in summary["by_gold_tag"].items():
+            sample_count = tag_summary["samples"]
+            counts = tag_summary["error_categories"]
+            percentages = []
+            for category in categories:
+                key = "null" if category == "correct" else category
+                percentages.append(
+                    f"{100 * counts.get(key, 0) / sample_count:.1f}%"
+                )
+            writer.writerow([gold_tag, sample_count, *percentages])
+    return category_output
 
 
 def write_disagreements(rows, entries, gold, gold_tags, output):
@@ -451,9 +471,19 @@ def main():
     summary["processed_this_run"] = successful_this_run
     summary["elapsed_seconds"] = round(elapsed_seconds, 2)
     summary["elapsed"] = str(timedelta(seconds=round(elapsed_seconds)))
-    print(json.dumps(summary, indent=2))
+    summary_output = output.with_name(f"{output.stem}_summary.json")
+    summary_output.write_text(json.dumps(summary, indent=2) + "\n")
+    category_output = write_category_tsv(summary, output)
+    print(
+        f"accuracy={summary['accuracy']:.4f} "
+        f"f1={summary['f1']:.4f} "
+        f"disagreements={summary['disagreements']} "
+        f"elapsed={summary['elapsed']}"
+    )
     print(f"results={output}")
-    print(f"disagreement_sample={review_output}")
+    print(f"summary={summary_output}")
+    print(f"categories={category_output}")
+    print(f"disagreements={review_output}")
 
 
 if __name__ == "__main__":

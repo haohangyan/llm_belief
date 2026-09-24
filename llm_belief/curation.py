@@ -46,6 +46,10 @@ RULES
 - If the evidence only raises the relation as a question, test, hypothesis,
   possibility, or future proposal without reporting a result, use rejected with
   the hypothesis error category.
+- A description of an experimental purpose or procedure is not a result. Do not
+  infer a positive result from an assay setup alone. Phrases such as "we tested
+  whether", "we examined whether", or "we sought to determine whether" require
+  an explicit reported outcome in the evidence sentence.
 - A relation can still be supported when the evidence says that the relation
   itself was reduced or blocked by another intervention. Evidence that A had no
   effect on B does not support either activation or inhibition; use the
@@ -94,19 +98,33 @@ def statement_specific_instruction(statement):
     meanings = {
         "Activation": (
             f"{subject} -> {object_} functional activity (positive regulation). "
-            "Expression or abundance alone does not match."
+            f"Classify by the property of {object_} that changes, not by whether "
+            f"{subject} is active. Changes only to {object_} expression, abundance, "
+            "protein or mRNA level, stability, or degradation are amount changes, "
+            "not activity; reject them as act_vs_amt. Generic verbs such as "
+            "'upregulates' do not establish activity by themselves."
         ),
         "Inhibition": (
             f"{subject} -> {object_} functional activity (negative regulation). "
-            "Reduced expression or abundance alone does not match."
+            f"Classify by the property of {object_} that changes, not by whether "
+            f"{subject} is active. Changes only to {object_} expression, abundance, "
+            "protein or mRNA level, stability, or degradation are amount changes, "
+            "not activity; reject them as act_vs_amt. Generic verbs such as "
+            "'downregulates' or 'suppresses' do not establish activity by themselves."
         ),
         "IncreaseAmount": (
             f"{subject} -> {object_} amount, expression, production, or stability "
-            "(positive regulation). Functional activity alone does not match."
+            f"(positive regulation). Classify by the property of {object_} that "
+            f"changes. Changes only to {object_} activation state, catalytic "
+            "activity, or functional output are activity changes, not amount; "
+            "reject them as act_vs_amt."
         ),
         "DecreaseAmount": (
             f"{subject} -> {object_} amount, expression, production, or stability "
-            "(negative regulation). Functional inhibition alone does not match."
+            f"(negative regulation). Classify by the property of {object_} that "
+            f"changes. Changes only to {object_} activation state, catalytic "
+            "activity, or functional output are activity changes, not amount; "
+            "reject them as act_vs_amt."
         ),
         "Complex": (
             f"Physical binding or membership in one molecular complex containing "
