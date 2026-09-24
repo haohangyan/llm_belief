@@ -43,20 +43,21 @@ RULES
   then compare the evidence with that exact meaning.
 - Judge whether the evidence discusses the stated relation; positive experimental
   confirmation is not required.
-- If the evidence only raises the relation as a question, test, hypothesis,
-  possibility, or future proposal without reporting a result, use rejected with
-  the hypothesis error category.
-- A description of an experimental purpose or procedure is not a result. Do not
-  infer a positive result from an assay setup alone. Phrases such as "we tested
-  whether", "we examined whether", or "we sought to determine whether" require
-  an explicit reported outcome in the evidence sentence.
+- Use the hypothesis category only when speculative or prospective language
+  applies to whether the stated relation itself occurs. Modal words alone are
+  not sufficient; determine which claim they modify.
+- Do not use hypothesis when the relation is asserted or presupposed and the
+  uncertainty applies only to its mechanism, consequence, significance,
+  context, or a downstream effect. An experimental purpose without an outcome
+  is hypothesis only when the existence of the relation itself remains open.
 - A relation can still be supported when the evidence says that the relation
   itself was reduced or blocked by another intervention. Evidence that A had no
   effect on B does not support either activation or inhibition; use the
   negative_result error category.
 - Supporting context is only for resolving ambiguity, not for inferring a relation.
-- Use UniProt gene/protein synonyms to match evidence names; synonyms identify
-  entities but do not establish relations.
+- Use UniProt context to validate each entity's biological sense, not only its
+  name or abbreviation. If the same text refers to a different biological
+  entity, reject it with the grounding error category.
 - For directed binary statements, Relation(A, B) means A affects or modifies B;
   evidence that B affects A does not match. Match the relation type exactly and
   follow TARGET MEANING when it is provided.
