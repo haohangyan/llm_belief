@@ -20,7 +20,7 @@ from llm_belief.llm import LLMClient, OpenAILLMClient
 from llm_belief.locations import CORPUS_PICKLE_PATH, CURATIONS_PATH
 
 
-def load_gold(limit, seed):
+def load_gold(limit, seed, include_tags=False):
     with CURATIONS_PATH.open() as file:
         curations = json.load(file)
 
@@ -32,12 +32,18 @@ def load_gold(limit, seed):
     if limit and limit < len(pairs):
         pairs = random.Random(seed).sample(pairs, limit)
 
-    return {
+    gold = {
         pair: "correct"
         if all(row["tag"] == "correct" for row in grouped[pair])
         else "incorrect"
         for pair in pairs
     }
+    if not include_tags:
+        return gold
+    gold_tags = {
+        pair: sorted({row["tag"] for row in grouped[pair]}) for pair in pairs
+    }
+    return gold, gold_tags
 
 
 def load_entries(gold):
@@ -88,7 +94,43 @@ def read_completed(path, model):
     return completed
 
 
-def score(rows, gold):
+def score_by_gold_tag(rows, gold_tags):
+    rows_by_tag = defaultdict(list)
+    for row in rows:
+        pair = (row["matches_hash"], row["source_hash"])
+        for tag in gold_tags[pair]:
+            rows_by_tag[tag].append(row)
+
+    summary = {}
+    for tag, tag_rows in sorted(rows_by_tag.items()):
+        expected_prediction = "correct" if tag == "correct" else "incorrect"
+        label_matches = sum(
+            row["prediction"] == expected_prediction for row in tag_rows
+        )
+        tag_summary = {
+            "samples": len(tag_rows),
+            "predictions": dict(Counter(row["prediction"] for row in tag_rows)),
+            "error_categories": dict(
+                Counter(row.get("error_category") or "null" for row in tag_rows)
+            ),
+            "label_matches": label_matches,
+            "label_accuracy": label_matches / len(tag_rows),
+        }
+        if tag != "correct":
+            category_matches = sum(
+                row["prediction"] == "incorrect"
+                and row.get("error_category") == tag
+                for row in tag_rows
+            )
+            tag_summary["error_category_matches"] = category_matches
+            tag_summary["error_category_accuracy"] = (
+                category_matches / len(tag_rows)
+            )
+        summary[tag] = tag_summary
+    return summary
+
+
+def score(rows, gold, gold_tags=None):
     predicted = [row for row in rows if row.get("prediction")]
     decided = [row for row in predicted if row["prediction"] != "uncertain"]
     gold_for = lambda row: gold[(row["matches_hash"], row["source_hash"])]
@@ -112,7 +154,7 @@ def score(rows, gold):
     )
     precision = tp / (tp + fp) if tp + fp else None
     recall = tp / (tp + fn) if tp + fn else None
-    return {
+    summary = {
         "total": total,
         "samples": len(predicted),
         "failed": total - len(predicted),
@@ -132,9 +174,12 @@ def score(rows, gold):
             else None
         ),
     }
+    if gold_tags is not None:
+        summary["by_gold_tag"] = score_by_gold_tag(predicted, gold_tags)
+    return summary
 
 
-def write_disagreement_sample(rows, entries, gold, output, seed):
+def write_disagreement_sample(rows, entries, gold, gold_tags, output, seed):
     entries_by_pair = {
         (entry["matches_hash"], entry["source_hash"]): entry
         for entry in entries
@@ -153,6 +198,7 @@ def write_disagreement_sample(rows, entries, gold, output, seed):
                 "statement": str(entry["statement"]),
                 "evidence_text": entry["evidence_text"],
                 "label": label,
+                "gold_tags": gold_tags[pair],
                 "llm_judgment": row["prediction"],
                 "error_category": row.get("error_category"),
                 "explanation": row.get("reasoning", ""),
@@ -262,7 +308,9 @@ def main():
 
     print(f"[setup] loading gold curations from {CURATIONS_PATH}", flush=True)
     phase_started = time.perf_counter()
-    gold = load_gold(args.limit or None, args.seed)
+    gold, gold_tags = load_gold(
+        args.limit or None, args.seed, include_tags=True
+    )
     print(
         f"[setup] loaded {len(gold)} gold pairs "
         f"in {time.perf_counter() - phase_started:.1f}s",
@@ -392,11 +440,12 @@ def main():
         for entry in entries
         if (entry["matches_hash"], entry["source_hash"]) in completed
     ]
-    summary = score(rows, gold)
+    summary = score(rows, gold, gold_tags)
     review_output, disagreement_count, review_count = write_disagreement_sample(
         rows,
         entries,
         gold,
+        gold_tags,
         output,
         args.seed,
     )
