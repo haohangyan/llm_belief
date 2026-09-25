@@ -50,6 +50,8 @@ RULES
   uncertainty applies only to its mechanism, consequence, significance,
   context, or a downstream effect. An experimental purpose without an outcome
   is hypothesis only when the existence of the relation itself remains open.
+- Merely stating that a relation was tested, analyzed, evaluated, measured, or
+  assayed does not report an outcome. If no outcome is reported, use hypothesis.
 - A relation can still be supported when the evidence says that the relation
   itself was reduced or blocked by another intervention. Evidence that A had no
   effect on B does not support either activation or inhibition; use the
