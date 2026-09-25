@@ -122,6 +122,10 @@ def main():
     with sqlite3.connect(output) as connection:
         create_table(connection)
         for index, path in enumerate(result_files, 1):
+            print(
+                f"[{index}/{len(result_files)}] reading {path.name}",
+                flush=True,
+            )
             count = insert_file(connection, path)
             loaded += count
             print(
