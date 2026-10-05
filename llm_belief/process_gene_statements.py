@@ -32,6 +32,7 @@ RESULTS_PER_FILE = 100_000
 MODEL = "openai/gpt-oss-120b"
 REASONING_EFFORT = "low"
 MAX_TOKENS = 512
+HASH_MASK = (1 << 64) - 1
 
 
 def evidence_pmid(evidence, pmcid_to_pmid):
@@ -46,7 +47,53 @@ def evidence_pmid(evidence, pmcid_to_pmid):
         return None
 
 
-def load_gene_entries():
+def evidence_key(statement_hash, source_hash):
+    """Pack two signed 64-bit hashes into one integer."""
+    return (
+        (int(statement_hash) & HASH_MASK) << 64
+        | (int(source_hash) & HASH_MASK)
+    )
+
+
+def load_completed_keys(results_directories):
+    result_files = sorted(
+        path
+        for directory in results_directories
+        for path in directory.glob("results_*.jsonl")
+    )
+    if not result_files:
+        raise FileNotFoundError(
+            "No results_*.jsonl files found in "
+            + ", ".join(map(str, results_directories))
+        )
+
+    completed = set()
+    invalid = 0
+    for path in tqdm(result_files, desc="Loading completed results", unit="file"):
+        with path.open(encoding="utf-8") as file:
+            for line_number, line in enumerate(file, 1):
+                try:
+                    result = json.loads(line)
+                    completed.add(
+                        evidence_key(
+                            result["statement_hash"], result["source_hash"]
+                        )
+                    )
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    invalid += 1
+                    print(
+                        f"[retry] skipping invalid result "
+                        f"{path}:{line_number}",
+                        flush=True,
+                    )
+    print(
+        f"[retry] completed={len(completed):,} invalid={invalid:,}",
+        flush=True,
+    )
+    return completed
+
+
+def load_gene_entries(completed_keys=None):
     with GENE_HASHES_PATH.open("rb") as file:
         gene_hashes = {int(value) for value in pickle.load(file)}
     if not PMCID_TO_PMID_PATH.exists():
@@ -87,11 +134,16 @@ def load_gene_entries():
             statements_loaded += 1
             for evidence in statement.evidence:
                 if evidence.text:
+                    source_hash = evidence.get_source_hash()
+                    if completed_keys is not None and evidence_key(
+                        stmt_hash, source_hash
+                    ) in completed_keys:
+                        continue
                     pmid = evidence_pmid(evidence, pmcid_to_pmid)
                     entries_by_pmid[pmid].append(
                         {
                             "stmt_hash": stmt_hash,
-                            "source_hash": evidence.get_source_hash(),
+                            "source_hash": source_hash,
                             "statement": statement,
                             "evidence_text": evidence.text,
                             "pmid": pmid,
@@ -254,15 +306,28 @@ def main():
         action="append",
         help="vLLM base URL; repeat for multiple servers",
     )
+    parser.add_argument(
+        "--retry-from",
+        type=Path,
+        action="append",
+        help="Only process evidence missing from these results; repeatable",
+    )
     args = parser.parse_args()
     servers = args.server or ["http://127.0.0.1:8000/v1"]
 
-    entries_by_pmid, evidence_count = load_gene_entries()
+    completed_keys = (
+        load_completed_keys(args.retry_from) if args.retry_from else None
+    )
+    entries_by_pmid, evidence_count = load_gene_entries(completed_keys)
+    del completed_keys
     print(
         f"[load] PMIDs={len(entries_by_pmid):,} "
         f"total evidences={evidence_count:,}",
         flush=True,
     )
+    if not evidence_count:
+        print("[done] no missing evidence to retry", flush=True)
+        return
     run(
         entries_by_pmid,
         evidence_count,
