@@ -96,20 +96,23 @@ def main():
     parser = argparse.ArgumentParser(
         description="Build a SQLite database from curation result JSONL files."
     )
-    parser.add_argument("results_directory", type=Path)
+    parser.add_argument("results_directories", type=Path, nargs="+")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    results_directory = args.results_directory
-    if not results_directory.is_dir():
-        raise FileNotFoundError(results_directory)
+    result_files = []
+    for results_directory in args.results_directories:
+        if not results_directory.is_dir():
+            raise FileNotFoundError(results_directory)
+        files = sorted(results_directory.glob("*.jsonl"))
+        if not files:
+            raise FileNotFoundError(
+                f"No JSONL files found in {results_directory}"
+            )
+        result_files.extend(files)
 
-    result_files = sorted(results_directory.glob("*.jsonl"))
-    if not result_files:
-        raise FileNotFoundError(f"No JSONL files found in {results_directory}")
-
-    output = args.output or results_directory.with_suffix(".sqlite")
+    output = args.output or args.results_directories[0].with_suffix(".sqlite")
     if output.exists():
         if not args.overwrite:
             raise FileExistsError(
