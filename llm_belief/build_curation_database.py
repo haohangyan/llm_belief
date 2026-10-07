@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 TABLE = "llm_evidence_curation"
+STATEMENT_TABLE = "llm_statement_correctness"
 INSERT_SQL = f"""
 INSERT OR REPLACE INTO {TABLE} (
     statement_hash,
@@ -34,6 +35,32 @@ def create_table(connection):
             explanation TEXT NOT NULL,
             PRIMARY KEY (statement_hash, source_hash)
         ) WITHOUT ROWID
+    """)
+
+
+def create_statement_correctness(connection):
+    connection.execute(f"""
+        CREATE TABLE {STATEMENT_TABLE} (
+            statement_hash INTEGER PRIMARY KEY,
+            correct_count INTEGER NOT NULL,
+            total_count INTEGER NOT NULL,
+            correctness_percent REAL NOT NULL
+        ) WITHOUT ROWID
+    """)
+    connection.execute(f"""
+        INSERT INTO {STATEMENT_TABLE}
+        SELECT
+            statement_hash,
+            SUM(CASE WHEN judgment = 'correct' THEN 1 ELSE 0 END),
+            COUNT(*),
+            ROUND(
+                100.0 * SUM(
+                    CASE WHEN judgment = 'correct' THEN 1 ELSE 0 END
+                ) / COUNT(*),
+                2
+            )
+        FROM {TABLE}
+        GROUP BY statement_hash
     """)
 
 
@@ -140,11 +167,17 @@ def main():
         connection.execute(
             f"CREATE INDEX ix_{TABLE}_source_hash ON {TABLE} (source_hash)"
         )
+        print("[score] calculating statement correctness", flush=True)
+        create_statement_correctness(connection)
         connection.commit()
         stored = connection.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
+        statements = connection.execute(
+            f"SELECT COUNT(*) FROM {STATEMENT_TABLE}"
+        ).fetchone()[0]
 
     print(f"database={output}")
     print(f"loaded={loaded:,} stored={stored:,} duplicates={loaded - stored:,}")
+    print(f"statements={statements:,}")
 
 
 if __name__ == "__main__":
