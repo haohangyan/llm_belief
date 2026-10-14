@@ -117,10 +117,7 @@ def main():
                     "evidence_text": "",
                     "judgment": "correct",
                     "error_category": None,
-                    "explanation": (
-                        "Database evidence without evidence text is treated "
-                        "as correct."
-                    ),
+                    "explanation": "",
                 }
                 output_file.write(
                     json.dumps(result, ensure_ascii=False) + "\n"
