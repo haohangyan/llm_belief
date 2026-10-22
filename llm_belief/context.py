@@ -254,7 +254,7 @@ def get_uniprot_context(statement):
 
 
 @lru_cache(maxsize=None)
-def _famplex_entry(famplex_id):
+def _famplex_type(famplex_id):
     from indra.ontology.bio import bio_ontology
 
     isa_members = list(
@@ -271,68 +271,25 @@ def _famplex_entry(famplex_id):
         entity_type = "protein family/complex"
     else:
         entity_type = "FamPlex entity"
-
-    members = frozenset(
-        bio_ontology.get_children(
-            "FPLX", famplex_id, ns_filter={"HGNC", "FPLX"}
-        )
-    )
-    return entity_type, members
-
-
-def _agent_label(agent):
-    for namespace in ("FPLX", "HGNC"):
-        if agent.db_refs.get(namespace):
-            return f"{agent.name} [{namespace}:{agent.db_refs[namespace]}]"
-    return agent.name
+    return entity_type
 
 
 def _format_famplex_context(statement):
-    agents = [agent for agent in statement.agent_list() if agent is not None]
-    famplex_agents = []
-    for index, agent in enumerate(agents):
-        if agent.db_refs.get("FPLX"):
-            others = [
-                other
-                for other_index, other in enumerate(agents)
-                if other_index != index
-            ]
-            famplex_agents.append((agent, others))
-        for condition in getattr(agent, "bound_conditions", []):
-            if condition.agent.db_refs.get("FPLX"):
-                famplex_agents.append((condition.agent, [agent]))
-
+    famplex_agents = list(
+        dict.fromkeys(
+            (agent.name, agent.db_refs["FPLX"])
+            for agent in statement.agent_list_with_bound_condition_agents()
+            if agent is not None and agent.db_refs.get("FPLX")
+        )
+    )
     if not famplex_agents:
         return None
 
-    lines = []
-    for agent, others in famplex_agents:
-        famplex_id = agent.db_refs["FPLX"]
-        entity_type, members = _famplex_entry(famplex_id)
-        comparisons = []
-        for other in others:
-            groundings = {
-                (namespace, str(other.db_refs[namespace]))
-                for namespace in ("HGNC", "FPLX")
-                if other.db_refs.get(namespace)
-            }
-            if groundings & members:
-                comparisons.append(
-                    f"{_agent_label(other)} is listed as a member of {agent.name}"
-                )
-        detail = "; ".join(comparisons)
-        lines.append(
-            f"- {_agent_label(agent)}: {entity_type}. {detail}."
-            if detail
-            else f"- {_agent_label(agent)}: {entity_type}."
-        )
-
-    return """FAMPLEX ENTITY CONTEXT (grounding only)
-Use this to match entity scope. Membership is not evidence for the stated
-relation, and a relation involving one member does not by itself support the
-same relation for the whole family or complex.
-
-""" + "\n".join(lines)
+    lines = [
+        f"- {name} [FPLX:{famplex_id}]: {_famplex_type(famplex_id)}"
+        for name, famplex_id in famplex_agents
+    ]
+    return "FAMPLEX ENTITIES\n" + "\n".join(lines)
 
 
 def load_famplex_contexts(statements):
