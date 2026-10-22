@@ -82,6 +82,13 @@ def load_entries(gold):
     return [found[pair] for pair in sorted(found)]
 
 
+def statement_has_famplex(statement):
+    return any(
+        agent is not None and agent.db_refs.get("FPLX")
+        for agent in statement.agent_list_with_bound_condition_agents()
+    )
+
+
 def read_completed(path, model):
     if not path.exists():
         return {}
@@ -295,6 +302,11 @@ def main():
         "--reasoning-effort", choices=["low", "medium", "high"]
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--famplex-only",
+        action="store_true",
+        help="Only benchmark statements containing a FamPlex agent.",
+    )
     args = parser.parse_args()
     model = args.model or (
         "gpt-5.6-luna"
@@ -317,15 +329,19 @@ def main():
         if args.reasoning_effort
         else ""
     )
+    subset_tag = "_famplex" if args.famplex_only else ""
     output = args.output or Path("outputs") / (
-        f"{args.provider}_{context_name}_{safe_model}{reasoning_tag}.jsonl"
+        f"{args.provider}_{context_name}{subset_tag}_"
+        f"{safe_model}{reasoning_tag}.jsonl"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"[setup] loading gold curations from {CURATIONS_PATH}", flush=True)
     phase_started = time.perf_counter()
     gold, gold_tags = load_gold(
-        args.limit or None, args.seed, include_tags=True
+        None if args.famplex_only else args.limit or None,
+        args.seed,
+        include_tags=True,
     )
     print(
         f"[setup] loaded {len(gold)} gold pairs "
@@ -336,6 +352,21 @@ def main():
     print(f"[setup] loading and matching corpus from {CORPUS_PICKLE_PATH}", flush=True)
     phase_started = time.perf_counter()
     entries = load_entries(gold)
+    if args.famplex_only:
+        entries = [
+            entry
+            for entry in entries
+            if statement_has_famplex(entry["statement"])
+        ]
+        if args.limit and args.limit < len(entries):
+            entries = random.Random(args.seed).sample(entries, args.limit)
+        selected_pairs = {
+            (entry["matches_hash"], entry["source_hash"])
+            for entry in entries
+        }
+        gold = {pair: gold[pair] for pair in selected_pairs}
+        gold_tags = {pair: gold_tags[pair] for pair in selected_pairs}
+        print(f"[setup] selected {len(entries)} FamPlex gold pairs", flush=True)
     print(
         f"[setup] matched {len(entries)} corpus entries "
         f"in {time.perf_counter() - phase_started:.1f}s",
