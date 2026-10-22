@@ -20,7 +20,7 @@ class LLMClient:
         model,
         max_tokens=1024,
         reasoning_effort=None,
-        base_url="http://127.0.0.1:8000/v1",
+        base_url="http://127.0.0.1:8001/v1",
     ):
         self.model = model
         self.max_tokens = max_tokens

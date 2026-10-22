@@ -59,7 +59,13 @@ def load_mesh_terms(pmids):
 def _candidate_genes(statement):
     names = []
     for agent in statement.agent_list():
-        if agent and agent.name and re.fullmatch(r"[A-Za-z0-9-]{2,20}", agent.name):
+        if (
+            agent
+            and not agent.db_refs.get("FPLX")
+            and (agent.db_refs.get("HGNC") or agent.db_refs.get("UP"))
+            and agent.name
+            and re.fullmatch(r"[A-Za-z0-9-]{2,20}", agent.name)
+        ):
             names.append(agent.name.upper())
     return list(dict.fromkeys(names))
 
