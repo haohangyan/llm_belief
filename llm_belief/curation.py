@@ -145,12 +145,19 @@ def build_prompt(
     abstract=None,
     uniprot_context=None,
     mesh_terms=None,
+    famplex_context=None,
 ):
     """Build the Gemma curation prompt."""
     abstract_context = f"Abstract:\n{abstract}" if abstract else ""
     entity_context = uniprot_context or ""
+    family_context = famplex_context or ""
     mesh_context = f"MeSH terms: {', '.join(mesh_terms)}" if mesh_terms else ""
-    context_parts = [abstract_context, mesh_context, entity_context]
+    context_parts = [
+        abstract_context,
+        mesh_context,
+        entity_context,
+        family_context,
+    ]
     context_parts = [part for part in context_parts if part]
     supporting_context = (
         "SUPPORTING CONTEXT\n" + "\n".join(context_parts)
@@ -181,10 +188,16 @@ def curate(
     abstract=None,
     uniprot_context=None,
     mesh_terms=None,
+    famplex_context=None,
 ):
     """Run one AI curation and return its structured decision."""
     prompt = build_prompt(
-        statement, evidence_text, abstract, uniprot_context, mesh_terms
+        statement,
+        evidence_text,
+        abstract,
+        uniprot_context,
+        mesh_terms,
+        famplex_context,
     )
     result, metadata = client.complete_json(
         [{"role": "user", "content": prompt}],

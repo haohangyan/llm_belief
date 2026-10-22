@@ -13,6 +13,7 @@ from pathlib import Path
 from llm_belief.abstract_cache import get_abstracts
 from llm_belief.curation import ERROR_CATEGORIES, curate
 from llm_belief.context import (
+    load_famplex_contexts,
     load_mesh_terms,
     load_uniprot_contexts,
 )
@@ -245,6 +246,7 @@ def run_one(
     abstract_by_pmid,
     mesh_by_pmid,
     uniprot_by_statement,
+    famplex_by_statement,
     contexts,
 ):
     if not entry["evidence_text"]:
@@ -264,6 +266,10 @@ def run_one(
     if "mesh" in contexts:
         context["mesh_terms"] = (
             mesh_by_pmid.get(int(entry["pmid"]), []) if entry["pmid"] else []
+        )
+    if "famplex" in contexts:
+        context["famplex_context"] = famplex_by_statement.get(
+            entry["matches_hash"]
         )
     result = curate(client, entry["statement"], entry["evidence_text"], **context)
     decision = result["decision"]
@@ -291,7 +297,9 @@ def main():
     parser.add_argument(
         "--context",
         nargs="+",
-        choices=["none", "uniprot", "abstract", "mesh", "full"],
+        choices=[
+            "none", "uniprot", "famplex", "abstract", "mesh", "full"
+        ],
         default=["none"],
     )
     parser.add_argument("--limit", type=int, default=0, help="0 means all unique curated pairs")
@@ -316,11 +324,13 @@ def main():
 
     contexts = set(args.context) - {"none"}
     if "full" in contexts:
-        contexts = {"uniprot", "abstract", "mesh"}
+        contexts = {"uniprot", "famplex", "abstract", "mesh"}
         context_name = "full"
     else:
         context_name = "_".join(
-            name for name in ("uniprot", "abstract", "mesh") if name in contexts
+            name
+            for name in ("uniprot", "famplex", "abstract", "mesh")
+            if name in contexts
         ) or "none"
 
     safe_model = model.replace("/", "_")
@@ -430,6 +440,21 @@ def main():
             flush=True,
         )
 
+    if "famplex" in contexts:
+        print("[setup] preparing FamPlex context", flush=True)
+        phase_started = time.perf_counter()
+    famplex_by_statement = (
+        load_famplex_contexts(entry["statement"] for entry in entries)
+        if "famplex" in contexts
+        else {}
+    )
+    if "famplex" in contexts:
+        print(
+            f"[setup] prepared FamPlex context in "
+            f"{time.perf_counter() - phase_started:.1f}s",
+            flush=True,
+        )
+
     print(f"[setup] reading completed results from {output}", flush=True)
     completed = read_completed(output, model)
     pending = [
@@ -462,6 +487,7 @@ def main():
                 abstract_by_pmid,
                 mesh_by_pmid,
                 uniprot_by_statement,
+                famplex_by_statement,
                 contexts,
             ): entry
             for entry in pending
