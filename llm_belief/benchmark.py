@@ -13,7 +13,7 @@ from pathlib import Path
 from llm_belief.abstract_cache import get_abstracts
 from llm_belief.curation import ERROR_CATEGORIES, curate
 from llm_belief.context import (
-    load_famplex_contexts,
+    get_famplex_context,
     load_mesh_terms,
     load_uniprot_contexts,
 )
@@ -70,6 +70,11 @@ def load_entries(gold):
                 "source_hash": source_hash,
                 "statement": stmt,
                 "evidence_text": evidence.text,
+                "evidence_groundings": (
+                    ((evidence.annotations or {}).get("agents") or {}).get(
+                        "raw_grounding", []
+                    )
+                ),
                 "source_api": evidence.source_api,
                 "pmid": evidence.pmid or evidence.text_refs.get("PMID"),
             }
@@ -246,7 +251,7 @@ def run_one(
     abstract_by_pmid,
     mesh_by_pmid,
     uniprot_by_statement,
-    famplex_by_statement,
+    famplex_by_evidence,
     contexts,
 ):
     if not entry["evidence_text"]:
@@ -268,8 +273,8 @@ def run_one(
             mesh_by_pmid.get(int(entry["pmid"]), []) if entry["pmid"] else []
         )
     if "famplex" in contexts:
-        context["famplex_context"] = famplex_by_statement.get(
-            entry["matches_hash"]
+        context["famplex_context"] = famplex_by_evidence.get(
+            (entry["matches_hash"], entry["source_hash"])
         )
     result = curate(client, entry["statement"], entry["evidence_text"], **context)
     decision = result["decision"]
@@ -443,8 +448,13 @@ def main():
     if "famplex" in contexts:
         print("[setup] preparing FamPlex context", flush=True)
         phase_started = time.perf_counter()
-    famplex_by_statement = (
-        load_famplex_contexts(entry["statement"] for entry in entries)
+    famplex_by_evidence = (
+        {
+            (entry["matches_hash"], entry["source_hash"]): get_famplex_context(
+                entry["statement"], entry["evidence_groundings"]
+            )
+            for entry in entries
+        }
         if "famplex" in contexts
         else {}
     )
@@ -487,7 +497,7 @@ def main():
                 abstract_by_pmid,
                 mesh_by_pmid,
                 uniprot_by_statement,
-                famplex_by_statement,
+                famplex_by_evidence,
                 contexts,
             ): entry
             for entry in pending

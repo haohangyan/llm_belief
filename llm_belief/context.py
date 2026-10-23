@@ -274,36 +274,89 @@ def _famplex_type(famplex_id):
     return entity_type
 
 
-def _format_famplex_context(statement):
-    famplex_agents = list(
-        dict.fromkeys(
-            (agent.name, agent.db_refs["FPLX"])
-            for agent in statement.agent_list_with_bound_condition_agents()
-            if agent is not None and agent.db_refs.get("FPLX")
-        )
-    )
+def _evidence_groundings(raw_grounding):
+    groundings = []
+    for namespace in ("HGNC", "FPLX"):
+        if raw_grounding and raw_grounding.get(namespace):
+            groundings.append(
+                (
+                    raw_grounding.get("TEXT"),
+                    namespace,
+                    str(raw_grounding[namespace]),
+                )
+            )
+    return groundings
+
+
+def _mentioned_famplex_members(famplex_id, groundings):
+    from indra.ontology.bio import bio_ontology
+
+    members = []
+    seen = set()
+    for text, namespace, identifier in groundings:
+        grounding = (namespace, identifier)
+        if (
+            grounding != ("FPLX", famplex_id)
+            and grounding not in seen
+            and bio_ontology.isa_or_partof(
+                namespace, identifier, "FPLX", famplex_id
+            )
+        ):
+            seen.add(grounding)
+            name = bio_ontology.get_name(namespace, identifier) or identifier
+            members.append(
+                f"{text or name} -> {name} [{namespace}:{identifier}]"
+            )
+    return members
+
+
+def _format_famplex_context(statement, evidence_groundings=None):
+    evidence_groundings = evidence_groundings or []
+    famplex_agents = []
+    for index, agent in enumerate(statement.agent_list()):
+        if agent is not None and agent.db_refs.get("FPLX"):
+            raw_grounding = (
+                evidence_groundings[index]
+                if index < len(evidence_groundings)
+                else None
+            )
+            famplex_agents.append(
+                (agent.name, agent.db_refs["FPLX"], raw_grounding)
+            )
+        if agent is not None:
+            for condition in agent.bound_conditions:
+                bound = condition.agent
+                if bound.db_refs.get("FPLX"):
+                    famplex_agents.append(
+                        (bound.name, bound.db_refs["FPLX"], None)
+                    )
     if not famplex_agents:
         return None
 
-    lines = [
-        f"- {name} [FPLX:{famplex_id}]: {_famplex_type(famplex_id)}"
-        for name, famplex_id in famplex_agents
-    ]
-    return """FAMPLEX ENTITIES
-A member or narrower subfamily is not interchangeable with the whole family or
-complex. If the evidence supports only the narrower entity, reject the broader
-statement as entity_boundaries unless the evidence explicitly generalizes it.
-""" + "\n".join(lines)
+    lines = []
+    has_member_match = False
+    for name, famplex_id, raw_grounding in famplex_agents:
+        entity_type = _famplex_type(famplex_id)
+        lines.append(f"- {name} [FPLX:{famplex_id}]: {entity_type}")
+        members = _mentioned_famplex_members(
+            famplex_id, _evidence_groundings(raw_grounding)
+        )
+        if members:
+            has_member_match = True
+            lines.append(
+                "  Evidence mentions narrower ontology member(s): "
+                + "; ".join(members)
+            )
+
+    rule = ""
+    if has_member_match:
+        rule = (
+            "\nEvidence about only a listed member does not support the whole "
+            "family or complex; reject it as entity_boundaries."
+        )
+    return "FAMPLEX ENTITIES\n" + "\n".join(lines) + rule
 
 
-def load_famplex_contexts(statements):
-    """Build compact FamPlex context, keyed by statement hash."""
-    return {
-        statement.get_hash(): _format_famplex_context(statement)
-        for statement in statements
-    }
-
-
-def get_famplex_context(statement):
+def get_famplex_context(statement, evidence_groundings=None):
     """Return FamPlex context for one statement."""
-    return load_famplex_contexts([statement]).get(statement.get_hash())
+    return _format_famplex_context(statement, evidence_groundings)
