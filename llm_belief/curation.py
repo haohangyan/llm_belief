@@ -74,7 +74,8 @@ RULES
   discussed.
 - Check mutation, modification, activity, location, and site conditions only when
   they are encoded in the statement. A general statement can be supported by
-  evidence about a more specific form of the same entity.
+  evidence about a more specific state of the same grounded entity, such as a
+  mutation or modification.
 - Use accepted when the extraction is supported, rejected when it is not, and
   uncertain only when the evidence is genuinely insufficient.
 - When rejected, error_category must be one of:

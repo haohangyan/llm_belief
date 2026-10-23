@@ -289,7 +289,11 @@ def _format_famplex_context(statement):
         f"- {name} [FPLX:{famplex_id}]: {_famplex_type(famplex_id)}"
         for name, famplex_id in famplex_agents
     ]
-    return "FAMPLEX ENTITIES\n" + "\n".join(lines)
+    return """FAMPLEX ENTITIES
+A member or narrower subfamily is not interchangeable with the whole family or
+complex. If the evidence supports only the narrower entity, reject the broader
+statement as entity_boundaries unless the evidence explicitly generalizes it.
+""" + "\n".join(lines)
 
 
 def load_famplex_contexts(statements):
