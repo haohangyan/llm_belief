@@ -70,11 +70,6 @@ def load_entries(gold):
                 "source_hash": source_hash,
                 "statement": stmt,
                 "evidence_text": evidence.text,
-                "evidence_groundings": (
-                    ((evidence.annotations or {}).get("agents") or {}).get(
-                        "raw_grounding", []
-                    )
-                ),
                 "source_api": evidence.source_api,
                 "pmid": evidence.pmid or evidence.text_refs.get("PMID"),
             }
@@ -451,7 +446,7 @@ def main():
     famplex_by_evidence = (
         {
             (entry["matches_hash"], entry["source_hash"]): get_famplex_context(
-                entry["statement"], entry["evidence_groundings"]
+                entry["statement"], entry["evidence_text"]
             )
             for entry in entries
         }

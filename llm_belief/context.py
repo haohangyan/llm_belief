@@ -274,17 +274,15 @@ def _famplex_type(famplex_id):
     return entity_type
 
 
-def _evidence_groundings(raw_grounding):
+def _gilda_groundings(evidence_text):
+    import gilda
+
     groundings = []
-    for namespace in ("HGNC", "FPLX"):
-        if raw_grounding and raw_grounding.get(namespace):
-            groundings.append(
-                (
-                    raw_grounding.get("TEXT"),
-                    namespace,
-                    str(raw_grounding[namespace]),
-                )
-            )
+    for annotation in gilda.annotate(
+        evidence_text, namespaces=["HGNC", "FPLX"]
+    ):
+        term = annotation.matches[0].term
+        groundings.append((annotation.text, term.db, str(term.id)))
     return groundings
 
 
@@ -310,36 +308,27 @@ def _mentioned_famplex_members(famplex_id, groundings):
     return members
 
 
-def _format_famplex_context(statement, evidence_groundings=None):
-    evidence_groundings = evidence_groundings or []
+def _format_famplex_context(statement, evidence_text):
     famplex_agents = []
-    for index, agent in enumerate(statement.agent_list()):
+    for agent in statement.agent_list():
         if agent is not None and agent.db_refs.get("FPLX"):
-            raw_grounding = (
-                evidence_groundings[index]
-                if index < len(evidence_groundings)
-                else None
-            )
-            famplex_agents.append(
-                (agent.name, agent.db_refs["FPLX"], raw_grounding)
-            )
+            famplex_agents.append((agent.name, agent.db_refs["FPLX"]))
         if agent is not None:
             for condition in agent.bound_conditions:
                 bound = condition.agent
                 if bound.db_refs.get("FPLX"):
-                    famplex_agents.append(
-                        (bound.name, bound.db_refs["FPLX"], None)
-                    )
+                    famplex_agents.append((bound.name, bound.db_refs["FPLX"]))
     if not famplex_agents:
         return None
 
+    evidence_groundings = _gilda_groundings(evidence_text)
     lines = []
     has_member_match = False
-    for name, famplex_id, raw_grounding in famplex_agents:
+    for name, famplex_id in famplex_agents:
         entity_type = _famplex_type(famplex_id)
         lines.append(f"- {name} [FPLX:{famplex_id}]: {entity_type}")
         members = _mentioned_famplex_members(
-            famplex_id, _evidence_groundings(raw_grounding)
+            famplex_id, evidence_groundings
         )
         if members:
             has_member_match = True
@@ -357,6 +346,6 @@ def _format_famplex_context(statement, evidence_groundings=None):
     return "FAMPLEX ENTITIES\n" + "\n".join(lines) + rule
 
 
-def get_famplex_context(statement, evidence_groundings=None):
+def get_famplex_context(statement, evidence_text):
     """Return FamPlex context for one statement."""
-    return _format_famplex_context(statement, evidence_groundings)
+    return _format_famplex_context(statement, evidence_text)
