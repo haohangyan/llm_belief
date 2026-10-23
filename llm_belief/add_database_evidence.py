@@ -38,6 +38,8 @@ def main():
     )
     parser.add_argument(
         "--gene-hashes",
+        "--statement-hashes",
+        dest="statement_hashes",
         type=Path,
         default=GENE_HASHES_PATH,
     )
@@ -48,8 +50,8 @@ def main():
         raise FileNotFoundError(args.results_directory)
     if not args.processed_statements.is_file():
         raise FileNotFoundError(args.processed_statements)
-    if not args.gene_hashes.is_file():
-        raise FileNotFoundError(args.gene_hashes)
+    if not args.statement_hashes.is_file():
+        raise FileNotFoundError(args.statement_hashes)
 
     output = args.results_directory / OUTPUT_NAME
     if output.exists() and not args.overwrite:
@@ -57,9 +59,9 @@ def main():
             f"{output} already exists; use --overwrite to replace it"
         )
 
-    with args.gene_hashes.open("rb") as file:
-        gene_hashes = {int(value) for value in pickle.load(file)}
-    print(f"gene_hashes={len(gene_hashes):,}", flush=True)
+    with args.statement_hashes.open("rb") as file:
+        statement_hashes = {int(value) for value in pickle.load(file)}
+    print(f"statement_hashes={len(statement_hashes):,}", flush=True)
 
     csv.field_size_limit(sys.maxsize)
     written = 0
@@ -90,7 +92,7 @@ def main():
                     "expected two TSV columns"
                 )
             statement_hash = int(row[0])
-            if statement_hash not in gene_hashes:
+            if statement_hash not in statement_hashes:
                 continue
 
             statement = stmt_from_json(clean_json_loads(row[1]))

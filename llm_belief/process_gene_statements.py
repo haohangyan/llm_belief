@@ -16,7 +16,11 @@ from indra_db.readonly_dumping.util import clean_json_loads
 from tqdm import tqdm
 
 from llm_belief.abstract_cache import get_abstracts
-from llm_belief.context import load_mesh_terms, load_uniprot_contexts
+from llm_belief.context import (
+    get_famplex_context,
+    load_mesh_terms,
+    load_uniprot_contexts,
+)
 from llm_belief.curation import curate
 from llm_belief.llm import LLMClient
 from llm_belief.locations import PMCID_TO_PMID_PATH
@@ -93,9 +97,9 @@ def load_completed_keys(results_directories):
     return completed
 
 
-def load_gene_entries(completed_keys=None):
-    with GENE_HASHES_PATH.open("rb") as file:
-        gene_hashes = {int(value) for value in pickle.load(file)}
+def load_entries(statement_hashes_path, completed_keys=None):
+    with statement_hashes_path.open("rb") as file:
+        statement_hashes = {int(value) for value in pickle.load(file)}
     if not PMCID_TO_PMID_PATH.exists():
         raise FileNotFoundError(
             f"{PMCID_TO_PMID_PATH}; run python -m llm_belief.pmcid_map first"
@@ -127,7 +131,7 @@ def load_gene_entries(completed_keys=None):
                     "expected two TSV columns"
                 )
             stmt_hash, stmt_json = int(row[0]), row[1]
-            if stmt_hash not in gene_hashes:
+            if stmt_hash not in statement_hashes:
                 continue
 
             statement = stmt_from_json(clean_json_loads(stmt_json))
@@ -152,7 +156,7 @@ def load_gene_entries(completed_keys=None):
                     evidence_count += 1
 
     print(
-        f"[load] gene_statements={statements_loaded:,} "
+        f"[load] statements={statements_loaded:,} "
         f"evidences={evidence_count:,}",
         flush=True,
     )
@@ -174,7 +178,14 @@ def iter_chunks(entries_by_pmid, chunk_size):
         yield chunk
 
 
-def process_one(client, entry, abstracts, mesh_terms, uniprot_contexts):
+def process_one(
+    client,
+    entry,
+    abstracts,
+    mesh_terms,
+    uniprot_contexts,
+    include_famplex_context,
+):
     pmid = entry["pmid"]
     result = curate(
         client,
@@ -183,6 +194,11 @@ def process_one(client, entry, abstracts, mesh_terms, uniprot_contexts):
         abstract=abstracts.get(pmid) if pmid else None,
         mesh_terms=mesh_terms.get(pmid, []) if pmid else [],
         uniprot_context=uniprot_contexts.get(entry["stmt_hash"]),
+        famplex_context=(
+            get_famplex_context(entry["statement"], entry["evidence_text"])
+            if include_famplex_context
+            else None
+        ),
     )
     judgment = {
         "accepted": "correct",
@@ -200,7 +216,14 @@ def process_one(client, entry, abstracts, mesh_terms, uniprot_contexts):
     }
 
 
-def run(entries_by_pmid, evidence_count, workers, chunk_size, servers):
+def run(
+    entries_by_pmid,
+    evidence_count,
+    workers,
+    chunk_size,
+    servers,
+    include_famplex_context,
+):
     clients = [
         LLMClient(
             MODEL,
@@ -247,6 +270,7 @@ def run(entries_by_pmid, evidence_count, workers, chunk_size, servers):
                         abstracts,
                         mesh_terms,
                         uniprot_contexts,
+                        include_famplex_context,
                     ): entry
                     for index, entry in enumerate(chunk)
                 }
@@ -302,6 +326,17 @@ def main():
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=5_000)
     parser.add_argument(
+        "--statement-hashes",
+        type=Path,
+        default=GENE_HASHES_PATH,
+        help="Pickle containing the statement hashes to process",
+    )
+    parser.add_argument(
+        "--famplex-context",
+        action="store_true",
+        help="Add Gilda and FamPlex ontology context to each request",
+    )
+    parser.add_argument(
         "--server",
         action="append",
         help="vLLM base URL; repeat for multiple servers",
@@ -318,7 +353,9 @@ def main():
     completed_keys = (
         load_completed_keys(args.retry_from) if args.retry_from else None
     )
-    entries_by_pmid, evidence_count = load_gene_entries(completed_keys)
+    entries_by_pmid, evidence_count = load_entries(
+        args.statement_hashes, completed_keys
+    )
     del completed_keys
     print(
         f"[load] PMIDs={len(entries_by_pmid):,} "
@@ -334,6 +371,7 @@ def main():
         args.workers,
         args.chunk_size,
         servers,
+        args.famplex_context,
     )
 
 

@@ -125,7 +125,13 @@ def main():
     )
     parser.add_argument("results_directories", type=Path, nargs="+")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--overwrite", action="store_true")
+    output_mode = parser.add_mutually_exclusive_group()
+    output_mode.add_argument("--overwrite", action="store_true")
+    output_mode.add_argument(
+        "--append",
+        action="store_true",
+        help="Add results to an existing database without rebuilding it",
+    )
     args = parser.parse_args()
 
     result_files = []
@@ -140,7 +146,12 @@ def main():
         result_files.extend(files)
 
     output = args.output or args.results_directories[0].with_suffix(".sqlite")
-    if output.exists():
+    if args.append:
+        if not output.is_file():
+            raise FileNotFoundError(
+                f"{output} does not exist; --append requires an existing database"
+            )
+    elif output.exists():
         if not args.overwrite:
             raise FileExistsError(
                 f"{output} already exists; use --overwrite to replace it"
@@ -150,7 +161,15 @@ def main():
 
     loaded = 0
     with sqlite3.connect(output) as connection:
-        create_table(connection)
+        if args.append:
+            evidence_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (TABLE,),
+            ).fetchone()
+            if not evidence_table:
+                raise ValueError(f"{output} does not contain {TABLE}")
+        else:
+            create_table(connection)
         for index, path in enumerate(result_files, 1):
             print(
                 f"[{index}/{len(result_files)}] reading {path.name}",
@@ -164,20 +183,35 @@ def main():
                 flush=True,
             )
 
-        connection.execute(
-            f"CREATE INDEX ix_{TABLE}_source_hash ON {TABLE} (source_hash)"
-        )
-        print("[score] calculating statement correctness", flush=True)
-        create_statement_correctness(connection)
+        if not args.append:
+            connection.execute(
+                f"CREATE INDEX ix_{TABLE}_source_hash ON {TABLE} (source_hash)"
+            )
+            print("[score] calculating statement correctness", flush=True)
+            create_statement_correctness(connection)
         connection.commit()
-        stored = connection.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
-        statements = connection.execute(
-            f"SELECT COUNT(*) FROM {STATEMENT_TABLE}"
-        ).fetchone()[0]
+        if not args.append:
+            stored = connection.execute(
+                f"SELECT COUNT(*) FROM {TABLE}"
+            ).fetchone()[0]
+            statements = connection.execute(
+                f"SELECT COUNT(*) FROM {STATEMENT_TABLE}"
+            ).fetchone()[0]
 
     print(f"database={output}")
-    print(f"loaded={loaded:,} stored={stored:,} duplicates={loaded - stored:,}")
-    print(f"statements={statements:,}")
+    if args.append:
+        print(f"loaded={loaded:,}")
+        print(
+            "statement correctness was not updated; run "
+            "python -m llm_belief.add_statement_correctness",
+            flush=True,
+        )
+    else:
+        print(
+            f"loaded={loaded:,} stored={stored:,} "
+            f"duplicates={loaded - stored:,}"
+        )
+        print(f"statements={statements:,}")
 
 
 if __name__ == "__main__":

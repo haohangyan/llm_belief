@@ -105,18 +105,21 @@ def write_scores(database, counts, batch_size=10_000):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("results_directory", type=Path)
+    parser.add_argument("results_directories", type=Path, nargs="+")
     parser.add_argument("database", type=Path)
     args = parser.parse_args()
 
-    if not args.results_directory.is_dir():
-        raise FileNotFoundError(args.results_directory)
     if not args.database.is_file():
         raise FileNotFoundError(args.database)
-    result_files = sorted(args.results_directory.glob("results_*.jsonl"))
+    result_files = []
+    for results_directory in args.results_directories:
+        if not results_directory.is_dir():
+            raise FileNotFoundError(results_directory)
+        result_files.extend(sorted(results_directory.glob("results_*.jsonl")))
     if not result_files:
         raise FileNotFoundError(
-            f"No results_*.jsonl files found in {args.results_directory}"
+            "No results_*.jsonl files found in "
+            + ", ".join(map(str, args.results_directories))
         )
 
     started = time.perf_counter()
