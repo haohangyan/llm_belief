@@ -60,6 +60,10 @@ RULES
 - Use UniProt context to validate each entity's biological sense, not only its
   name or abbreviation. If the same text refers to a different biological
   entity, reject it with the grounding error category.
+- INDRA represents agents at the gene level. A protein or processed peptide may
+  be represented by the gene that encodes it or its precursor; accept this
+  entity mapping when biologically valid, while still requiring evidence for
+  the stated relation.
 - For directed binary statements, Relation(A, B) means A affects or modifies B;
   evidence that B affects A does not match. Match the relation type exactly and
   follow TARGET MEANING when it is provided.
