@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 EVIDENCE_TABLE = "llm_evidence_curation"
 STATEMENT_TABLE = "llm_statement_correctness"
+STATEMENT_PROPERTY = "llm_correct_evidence_count:int"
 PYSTOW_HOME = Path(os.environ.get("PYSTOW_HOME", Path.home() / ".data"))
 DEFAULT_EVIDENCE_NODES = (
     PYSTOW_HOME
@@ -121,7 +122,7 @@ def _write_statement_batch(connection, batch, writer, counts):
     connection.execute("DELETE FROM wanted_statement")
     connection.executemany(
         "INSERT OR IGNORE INTO wanted_statement VALUES (?)",
-        ((row[3],) for row in batch),
+        ((statement_hash,) for _, statement_hash in batch),
     )
     correct_counts = dict(connection.execute(f"""
         SELECT wanted.statement_hash, correctness.correct_count
@@ -129,21 +130,14 @@ def _write_statement_batch(connection, batch, writer, counts):
         JOIN {STATEMENT_TABLE} AS correctness
           ON correctness.statement_hash = wanted.statement_hash
     """))
-    for start_id, end_id, relation_type, statement_hash in batch:
+    for row, statement_hash in batch:
         correct_count = correct_counts.get(statement_hash)
         if correct_count is None:
             counts["unmatched"] += 1
-            continue
-        writer.writerow(
-            (
-                start_id,
-                end_id,
-                relation_type,
-                statement_hash,
-                correct_count,
-            )
-        )
-        counts["matched"] += 1
+            correct_count = ""
+        else:
+            counts["matched"] += 1
+        writer.writerow((*row, correct_count))
 
 
 def write_statement_updates(connection, source, output, batch_size):
@@ -160,30 +154,14 @@ def write_statement_updates(connection, source, output, batch_size):
         _require_columns(
             header, (":START_ID", ":END_ID", ":TYPE", "stmt_hash:int"), source
         )
-        start_index = header.index(":START_ID")
-        end_index = header.index(":END_ID")
-        type_index = header.index(":TYPE")
+        if STATEMENT_PROPERTY in header:
+            raise ValueError(f"{source} already contains {STATEMENT_PROPERTY}")
         statement_index = header.index("stmt_hash:int")
         writer = csv.writer(out_file, delimiter="\t")
-        writer.writerow(
-            (
-                ":START_ID",
-                ":END_ID",
-                ":TYPE",
-                "stmt_hash:int",
-                "llm_correct_evidence_count:int",
-            )
-        )
+        writer.writerow((*header, STATEMENT_PROPERTY))
 
         for row in tqdm(reader, desc="Matching statement edges", unit="edge"):
-            batch.append(
-                (
-                    row[start_index],
-                    row[end_index],
-                    row[type_index],
-                    int(row[statement_index]),
-                )
-            )
+            batch.append((row, int(row[statement_index])))
             if len(batch) >= batch_size:
                 _write_statement_batch(connection, batch, writer, counts)
                 batch.clear()
@@ -213,7 +191,7 @@ def main():
     parser.add_argument(
         "--statements-only",
         action="store_true",
-        help="Only build the statement edge update file.",
+        help="Only build the complete statement edge file with the LLM property.",
     )
     parser.add_argument("--batch-size", type=int, default=10_000)
     args = parser.parse_args()
