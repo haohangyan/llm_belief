@@ -15,6 +15,9 @@ from tqdm import tqdm
 EVIDENCE_TABLE = "llm_evidence_curation"
 STATEMENT_TABLE = "llm_statement_correctness"
 STATEMENT_PROPERTY = "llm_correct_evidence_count:int"
+HASH_MASK = (1 << 64) - 1
+JUDGMENT_CODES = {"incorrect": 0, "correct": 1, "uncertain": 2}
+CODE_JUDGMENTS = {code: judgment for judgment, code in JUDGMENT_CODES.items()}
 PYSTOW_HOME = Path(os.environ.get("PYSTOW_HOME", Path.home() / ".data"))
 DEFAULT_EVIDENCE_NODES = (
     PYSTOW_HOME
@@ -48,6 +51,34 @@ def _check_tables(connection, database, required_tables):
         )
 
 
+def evidence_key(statement_hash, source_hash):
+    return (
+        (int(statement_hash) & HASH_MASK) << 64
+        | (int(source_hash) & HASH_MASK)
+    )
+
+
+def load_evidence_judgments(connection):
+    judgments = {}
+    rows = connection.execute(f"""
+        SELECT statement_hash, source_hash, judgment
+        FROM {EVIDENCE_TABLE}
+    """)
+    for statement_hash, source_hash, judgment in tqdm(
+        rows, desc="Loading LLM judgments", unit="row"
+    ):
+        judgments[evidence_key(statement_hash, source_hash)] = (
+            JUDGMENT_CODES[judgment]
+        )
+    return judgments
+
+
+def _write_evidence_result(writer, counts, evidence_id, judgment):
+    counts[judgment or "unmatched"] += 1
+    if judgment in {"correct", "incorrect"}:
+        writer.writerow((evidence_id, "Evidence", judgment))
+
+
 def _write_evidence_batch(connection, batch, writer, counts):
     connection.execute("DELETE FROM wanted_evidence")
     connection.executemany(
@@ -62,19 +93,22 @@ def _write_evidence_batch(connection, batch, writer, counts):
     """))
     for evidence_id, _, _ in batch:
         judgment = judgments.get(evidence_id)
-        counts[judgment or "unmatched"] += 1
-        if judgment in {"correct", "incorrect"}:
-            writer.writerow((evidence_id, "Evidence", judgment))
+        _write_evidence_result(writer, counts, evidence_id, judgment)
 
 
-def write_evidence_updates(connection, source, output, batch_size):
-    connection.execute("""
-        CREATE TEMP TABLE wanted_evidence (
-            evidence_id TEXT PRIMARY KEY,
-            statement_hash INTEGER NOT NULL,
-            source_hash INTEGER NOT NULL
-        ) WITHOUT ROWID
-    """)
+def write_evidence_updates(
+    connection, source, output, batch_size, in_memory=False
+):
+    if in_memory:
+        judgments = load_evidence_judgments(connection)
+    else:
+        connection.execute("""
+            CREATE TEMP TABLE wanted_evidence (
+                evidence_id TEXT PRIMARY KEY,
+                statement_hash INTEGER NOT NULL,
+                source_hash INTEGER NOT NULL
+            ) WITHOUT ROWID
+        """)
     counts = Counter()
     missing_source_hash = 0
     batch = []
@@ -96,6 +130,16 @@ def write_evidence_updates(connection, source, output, batch_size):
             if source_hash is None:
                 missing_source_hash += 1
                 continue
+            if in_memory:
+                judgment = CODE_JUDGMENTS.get(
+                    judgments.get(
+                        evidence_key(row[statement_index], source_hash)
+                    )
+                )
+                _write_evidence_result(
+                    writer, counts, row[id_index], judgment
+                )
+                continue
             batch.append(
                 (
                     row[id_index],
@@ -106,7 +150,7 @@ def write_evidence_updates(connection, source, output, batch_size):
             if len(batch) >= batch_size:
                 _write_evidence_batch(connection, batch, writer, counts)
                 batch.clear()
-        if batch:
+        if batch and not in_memory:
             _write_evidence_batch(connection, batch, writer, counts)
 
     matched = counts["correct"] + counts["incorrect"]
@@ -199,8 +243,15 @@ def main():
         action="store_true",
         help="Only build the Evidence node update file with the LLM property.",
     )
+    parser.add_argument(
+        "--evidence-in-memory",
+        action="store_true",
+        help="Load compact Evidence judgments into memory for faster matching.",
+    )
     parser.add_argument("--batch-size", type=int, default=10_000)
     args = parser.parse_args()
+    if args.evidence_in_memory and args.statements_only:
+        parser.error("--evidence-in-memory cannot be used with --statements-only")
 
     input_paths = [args.database]
     if not args.evidence_only:
@@ -235,6 +286,7 @@ def main():
                 args.evidence_nodes,
                 evidence_output,
                 args.batch_size,
+                in_memory=args.evidence_in_memory,
             )
         if not args.evidence_only:
             statement_counts = write_statement_updates(
