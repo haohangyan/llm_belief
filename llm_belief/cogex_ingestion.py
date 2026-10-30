@@ -188,15 +188,23 @@ def main():
     parser.add_argument(
         "--statement-edges", type=Path, default=DEFAULT_STATEMENT_EDGES
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--statements-only",
         action="store_true",
         help="Only build the complete statement edge file with the LLM property.",
     )
+    mode.add_argument(
+        "--evidence-only",
+        action="store_true",
+        help="Only build the Evidence node update file with the LLM property.",
+    )
     parser.add_argument("--batch-size", type=int, default=10_000)
     args = parser.parse_args()
 
-    input_paths = [args.database, args.statement_edges]
+    input_paths = [args.database]
+    if not args.evidence_only:
+        input_paths.append(args.statement_edges)
     if not args.statements_only:
         input_paths.append(args.evidence_nodes)
     for path in input_paths:
@@ -212,7 +220,9 @@ def main():
 
     uri = f"file:{args.database.resolve()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as connection:
-        required_tables = {STATEMENT_TABLE}
+        required_tables = set()
+        if not args.evidence_only:
+            required_tables.add(STATEMENT_TABLE)
         if not args.statements_only:
             required_tables.add(EVIDENCE_TABLE)
         _check_tables(connection, args.database, required_tables)
@@ -226,12 +236,13 @@ def main():
                 evidence_output,
                 args.batch_size,
             )
-        statement_counts = write_statement_updates(
-            connection,
-            args.statement_edges,
-            statement_output,
-            args.batch_size,
-        )
+        if not args.evidence_only:
+            statement_counts = write_statement_updates(
+                connection,
+                args.statement_edges,
+                statement_output,
+                args.batch_size,
+            )
 
     if not args.statements_only:
         print(f"evidence_output={evidence_output}")
@@ -242,11 +253,12 @@ def main():
             f"evidence_unmatched={evidence_counts['unmatched']:,} "
             f"evidence_missing_source_hash={missing_source_hash:,}"
         )
-    print(f"statement_output={statement_output}")
-    print(
-        f"statement_edges_matched={statement_counts['matched']:,} "
-        f"statement_edges_unmatched={statement_counts['unmatched']:,}"
-    )
+    if not args.evidence_only:
+        print(f"statement_output={statement_output}")
+        print(
+            f"statement_edges_matched={statement_counts['matched']:,} "
+            f"statement_edges_unmatched={statement_counts['unmatched']:,}"
+        )
 
 
 if __name__ == "__main__":
