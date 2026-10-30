@@ -56,9 +56,9 @@ def _write_evidence_batch(connection, batch, writer, counts):
     judgments = dict(connection.execute(f"""
         SELECT wanted.evidence_id, curation.judgment
         FROM wanted_evidence AS wanted
-        JOIN {EVIDENCE_TABLE} AS curation
-          ON curation.statement_hash = wanted.statement_hash
-         AND curation.source_hash = wanted.source_hash
+        CROSS JOIN {EVIDENCE_TABLE} AS curation
+        WHERE curation.statement_hash = wanted.statement_hash
+          AND curation.source_hash = wanted.source_hash
     """))
     for evidence_id, _, _ in batch:
         judgment = judgments.get(evidence_id)
