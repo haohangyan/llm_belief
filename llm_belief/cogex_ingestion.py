@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 EVIDENCE_TABLE = "llm_evidence_curation"
 STATEMENT_TABLE = "llm_statement_correctness"
-STATEMENT_PROPERTY = "llm_correct_evidence_count:int"
+STATEMENT_PROPERTY = "llm_correctness:string"
 HASH_MASK = (1 << 64) - 1
 JUDGMENT_CODES = {"incorrect": 0, "correct": 1, "uncertain": 2}
 CODE_JUDGMENTS = {code: judgment for judgment, code in JUDGMENT_CODES.items()}
@@ -73,45 +73,10 @@ def load_evidence_judgments(connection):
     return judgments
 
 
-def _write_evidence_result(writer, counts, evidence_id, judgment):
-    counts[judgment or "unmatched"] += 1
-    if judgment in {"correct", "incorrect"}:
-        writer.writerow((evidence_id, "Evidence", judgment))
-
-
-def _write_evidence_batch(connection, batch, writer, counts):
-    connection.execute("DELETE FROM wanted_evidence")
-    connection.executemany(
-        "INSERT INTO wanted_evidence VALUES (?, ?, ?)", batch
-    )
-    judgments = dict(connection.execute(f"""
-        SELECT wanted.evidence_id, curation.judgment
-        FROM wanted_evidence AS wanted
-        CROSS JOIN {EVIDENCE_TABLE} AS curation
-        WHERE curation.statement_hash = wanted.statement_hash
-          AND curation.source_hash = wanted.source_hash
-    """))
-    for evidence_id, _, _ in batch:
-        judgment = judgments.get(evidence_id)
-        _write_evidence_result(writer, counts, evidence_id, judgment)
-
-
-def write_evidence_updates(
-    connection, source, output, batch_size, in_memory=False
-):
-    if in_memory:
-        judgments = load_evidence_judgments(connection)
-    else:
-        connection.execute("""
-            CREATE TEMP TABLE wanted_evidence (
-                evidence_id TEXT PRIMARY KEY,
-                statement_hash INTEGER NOT NULL,
-                source_hash INTEGER NOT NULL
-            ) WITHOUT ROWID
-        """)
+def write_evidence_updates(connection, source, output):
+    judgments = load_evidence_judgments(connection)
     counts = Counter()
     missing_source_hash = 0
-    batch = []
     with gzip.open(source, "rt") as source_file, gzip.open(output, "wt") as out_file:
         reader = csv.reader(source_file, delimiter="\t")
         header = next(reader)
@@ -130,28 +95,14 @@ def write_evidence_updates(
             if source_hash is None:
                 missing_source_hash += 1
                 continue
-            if in_memory:
-                judgment = CODE_JUDGMENTS.get(
-                    judgments.get(
-                        evidence_key(row[statement_index], source_hash)
-                    )
-                )
-                _write_evidence_result(
-                    writer, counts, row[id_index], judgment
-                )
-                continue
-            batch.append(
-                (
-                    row[id_index],
-                    int(row[statement_index]),
-                    int(source_hash),
+            judgment = CODE_JUDGMENTS.get(
+                judgments.get(
+                    evidence_key(row[statement_index], source_hash)
                 )
             )
-            if len(batch) >= batch_size:
-                _write_evidence_batch(connection, batch, writer, counts)
-                batch.clear()
-        if batch and not in_memory:
-            _write_evidence_batch(connection, batch, writer, counts)
+            counts[judgment or "unmatched"] += 1
+            if judgment in {"correct", "incorrect"}:
+                writer.writerow((row[id_index], "Evidence", judgment))
 
     matched = counts["correct"] + counts["incorrect"]
     if not matched:
@@ -162,26 +113,40 @@ def write_evidence_updates(
     return counts, missing_source_hash
 
 
+def statement_strength(correct_count, total_count):
+    if 100 * correct_count < 33 * total_count:
+        return "weak"
+    if 100 * correct_count > 66 * total_count and total_count >= 3:
+        return "strong"
+    return "medium"
+
+
 def _write_statement_batch(connection, batch, writer, counts):
     connection.execute("DELETE FROM wanted_statement")
     connection.executemany(
         "INSERT OR IGNORE INTO wanted_statement VALUES (?)",
         ((statement_hash,) for _, statement_hash in batch),
     )
-    correct_counts = dict(connection.execute(f"""
-        SELECT wanted.statement_hash, correctness.correct_count
+    rows = connection.execute(f"""
+        SELECT wanted.statement_hash,
+               correctness.correct_count,
+               correctness.total_count
         FROM wanted_statement AS wanted
         JOIN {STATEMENT_TABLE} AS correctness
           ON correctness.statement_hash = wanted.statement_hash
-    """))
+    """)
+    strengths = {
+        statement_hash: statement_strength(correct_count, total_count)
+        for statement_hash, correct_count, total_count in rows
+    }
     for row, statement_hash in batch:
-        correct_count = correct_counts.get(statement_hash)
-        if correct_count is None:
+        strength = strengths.get(statement_hash)
+        if strength is None:
             counts["unmatched"] += 1
-            correct_count = ""
+            strength = ""
         else:
             counts["matched"] += 1
-        writer.writerow((*row, correct_count))
+        writer.writerow((*row, strength))
 
 
 def write_statement_updates(connection, source, output, batch_size):
@@ -243,15 +208,8 @@ def main():
         action="store_true",
         help="Only build the Evidence node update file with the LLM property.",
     )
-    parser.add_argument(
-        "--evidence-in-memory",
-        action="store_true",
-        help="Load compact Evidence judgments into memory for faster matching.",
-    )
     parser.add_argument("--batch-size", type=int, default=10_000)
     args = parser.parse_args()
-    if args.evidence_in_memory and args.statements_only:
-        parser.error("--evidence-in-memory cannot be used with --statements-only")
 
     input_paths = [args.database]
     if not args.evidence_only:
@@ -285,8 +243,6 @@ def main():
                 connection,
                 args.evidence_nodes,
                 evidence_output,
-                args.batch_size,
-                in_memory=args.evidence_in_memory,
             )
         if not args.evidence_only:
             statement_counts = write_statement_updates(
