@@ -242,8 +242,10 @@ def _format_uniprot_context(genes, entries):
         function = data.get("function")
         function = _strip_pubmed_citations(function) if function else "N/A"
         product_context = (
-            f"  INDRA agent mapping: {symbol} represents this precursor and "
-            f"its processed products/peptides: {processed_products}\n"
+            f"  INDRA agent mapping: In this statement, {symbol} represents "
+            "this precursor and its processed products/peptides. Evidence "
+            "naming one of these products counts as naming the "
+            f"{symbol} agent: {processed_products}\n"
             if processed_products
             else ""
         )
