@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 from indra.statements import stmt_from_json
-from indra.tools import assemble_corpus as ac
 from indra_db.readonly_dumping.util import clean_json_loads
 from tqdm import tqdm
 
@@ -32,11 +31,29 @@ def statement_has_chemical_gene(statement):
     return "CHEBI" in namespaces and bool({"HGNC", "FPLX"} & namespaces)
 
 
+def statement_is_gene_only(statement, specific_only):
+    """Match INDRA's gene-only filter without retaining a statement batch."""
+    namespaces = ("HGNC", "UP") if specific_only else ("HGNC", "UP", "FPLX")
+    for agent in statement.agent_list():
+        if agent is None:
+            continue
+        if not any(agent.db_refs.get(namespace) for namespace in namespaces):
+            return False
+        if any(
+            not any(
+                condition.agent.db_refs.get(namespace)
+                for namespace in namespaces
+            )
+            for condition in agent.bound_conditions
+        ):
+            return False
+    return True
+
+
 def build_statement_hashes(
     processed_statements=PROCESSED_STATEMENTS_PATH,
     filters=tuple(FILTER_FILENAMES),
     output_directory=None,
-    batch_size=100_000,
 ):
     """Scan the processed statements once and write selected hash sets."""
     processed_statements = Path(processed_statements)
@@ -47,51 +64,6 @@ def build_statement_hashes(
         raise ValueError(f"Unknown filters: {', '.join(sorted(unknown))}")
 
     hash_sets = {name: set() for name in filters}
-    batch_hashes = []
-    batch_statements = []
-
-    def filter_batch():
-        gene_ids = set()
-        if "gene" in hash_sets or "famplex" in hash_sets:
-            gene_ids = {
-                id(statement)
-                for statement in ac.filter_genes_only(
-                    batch_statements, specific_only=True
-                )
-            }
-        if "gene" in hash_sets:
-            hash_sets["gene"].update(
-                statement_hash
-                for statement_hash, statement in zip(
-                    batch_hashes, batch_statements
-                )
-                if id(statement) in gene_ids
-            )
-        if "famplex" in hash_sets:
-            gene_or_family_ids = {
-                id(statement)
-                for statement in ac.filter_genes_only(
-                    batch_statements, specific_only=False
-                )
-            }
-            hash_sets["famplex"].update(
-                statement_hash
-                for statement_hash, statement in zip(
-                    batch_hashes, batch_statements
-                )
-                if id(statement) in gene_or_family_ids
-                and id(statement) not in gene_ids
-            )
-        if "chemical-gene" in hash_sets:
-            hash_sets["chemical-gene"].update(
-                statement_hash
-                for statement_hash, statement in zip(
-                    batch_hashes, batch_statements
-                )
-                if statement_has_chemical_gene(statement)
-            )
-        batch_hashes.clear()
-        batch_statements.clear()
 
     csv.field_size_limit(sys.maxsize)
     with gzip.open(
@@ -103,22 +75,34 @@ def build_statement_hashes(
             unit="stmt",
             unit_scale=True,
         )
-        for statement_hash, statement_json in rows:
-            batch_hashes.append(int(statement_hash))
-            batch_statements.append(
-                stmt_from_json(clean_json_loads(statement_json))
+        for row_number, (statement_hash, statement_json) in enumerate(rows, 1):
+            statement_hash = int(statement_hash)
+            statement = stmt_from_json(clean_json_loads(statement_json))
+            gene_only = (
+                statement_is_gene_only(statement, specific_only=True)
+                if "gene" in hash_sets or "famplex" in hash_sets
+                else False
             )
-            if len(batch_statements) >= batch_size:
-                filter_batch()
+            if "gene" in hash_sets and gene_only:
+                hash_sets["gene"].add(statement_hash)
+            if (
+                "famplex" in hash_sets
+                and not gene_only
+                and statement_is_gene_only(statement, specific_only=False)
+            ):
+                hash_sets["famplex"].add(statement_hash)
+            if (
+                "chemical-gene" in hash_sets
+                and statement_has_chemical_gene(statement)
+            ):
+                hash_sets["chemical-gene"].add(statement_hash)
+            if row_number % 100_000 == 0:
                 rows.set_postfix(
                     **{
                         name: f"{len(values):,}"
                         for name, values in hash_sets.items()
                     }
                 )
-
-    if batch_statements:
-        filter_batch()
 
     output_directory.mkdir(parents=True, exist_ok=True)
     outputs = {}
@@ -148,13 +132,11 @@ def main():
         default=tuple(FILTER_FILENAMES),
     )
     parser.add_argument("--output-directory", type=Path)
-    parser.add_argument("--batch-size", type=int, default=100_000)
     args = parser.parse_args()
     build_statement_hashes(
         args.processed_statements,
         args.filters,
         args.output_directory,
-        args.batch_size,
     )
 
 
