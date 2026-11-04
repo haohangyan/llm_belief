@@ -71,6 +71,22 @@ def _candidate_genes(statement):
     return list(dict.fromkeys(names))
 
 
+def _protein_description_names(description):
+    names = []
+    recommended = description.get("recommendedName", {})
+    names.append(recommended.get("fullName", {}).get("value"))
+    names.extend(
+        name.get("value") for name in recommended.get("shortNames", [])
+    )
+    for alternative in description.get("alternativeNames", []):
+        names.append(alternative.get("fullName", {}).get("value"))
+        names.extend(
+            name.get("value")
+            for name in alternative.get("shortNames", [])
+        )
+    return list(dict.fromkeys(name for name in names if name))
+
+
 def _fetch_uniprot(gene):
     params = urlencode({
         "query": f"gene:{gene}",
@@ -96,13 +112,10 @@ def _fetch_uniprot(gene):
             )
 
     description = result.get("proteinDescription", {})
-    recommended = description.get("recommendedName", {})
-    protein_names = [recommended.get("fullName", {}).get("value")]
-    protein_names.extend(name.get("value") for name in recommended.get("shortNames", []))
-    protein_names.extend(
-        name.get("fullName", {}).get("value")
-        for name in description.get("alternativeNames", [])
-    )
+    protein_names = _protein_description_names(description)
+    processed_products = []
+    for product in description.get("contains", []):
+        processed_products.extend(_protein_description_names(product))
     function = next(
         (
             comment.get("texts", [{}])[0].get("value")
@@ -114,7 +127,8 @@ def _fetch_uniprot(gene):
     return {
         "gene_name": gene_names[0] if gene_names else gene,
         "gene_synonyms": list(dict.fromkeys(gene_names)),
-        "protein_names": list(dict.fromkeys(name for name in protein_names if name)),
+        "protein_names": protein_names,
+        "processed_products": list(dict.fromkeys(processed_products)),
         "function": function,
     }
 
@@ -153,7 +167,15 @@ def _fetch_safely(gene):
 
 
 def _add_missing_uniprot(genes, entries):
-    missing = genes - entries.keys()
+    missing = {
+        gene
+        for gene in genes
+        if gene not in entries
+        or (
+            not entries[gene].get("error")
+            and "processed_products" not in entries[gene]
+        )
+    }
     tqdm.write(
         f"[uniprot] genes={len(genes):,} "
         f"cached={len(genes) - len(missing):,} missing={len(missing):,}"
@@ -214,14 +236,23 @@ def _format_uniprot_context(genes, entries):
         symbol = data.get("gene_name") or "Unknown"
         gene_synonyms = ", ".join(data.get("gene_synonyms", [])[:12]) or symbol
         protein_names = ", ".join(data.get("protein_names", [])[:8]) or "N/A"
+        processed_products = ", ".join(
+            data.get("processed_products", [])[:20]
+        )
         function = data.get("function")
         function = _strip_pubmed_citations(function) if function else "N/A"
+        product_context = (
+            f"  Processed products/peptides: {processed_products}\n"
+            if processed_products
+            else ""
+        )
         lines.append(
             f"- {symbol}\n"
             "  Match note: First UniProt search hit for the queried token "
             "(limit=1); may be a non-exact match.\n"
             f"  Gene names/synonyms: {gene_synonyms}\n"
             f"  Protein names/synonyms: {protein_names}\n"
+            f"{product_context}"
             f"  Function: {function}"
         )
 
