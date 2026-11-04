@@ -11,7 +11,11 @@ from datetime import timedelta
 from pathlib import Path
 
 from llm_belief.abstract_cache import get_abstracts
-from llm_belief.curation import ERROR_CATEGORIES, curate
+from llm_belief.curation import (
+    ERROR_CATEGORIES,
+    curate,
+    get_site_context,
+)
 from llm_belief.context import (
     get_famplex_context,
     load_mesh_terms,
@@ -70,6 +74,7 @@ def load_entries(gold):
                 "source_hash": source_hash,
                 "statement": stmt,
                 "evidence_text": evidence.text,
+                "site_context": get_site_context(stmt, evidence),
                 "source_api": evidence.source_api,
                 "pmid": evidence.pmid or evidence.text_refs.get("PMID"),
             }
@@ -271,6 +276,7 @@ def run_one(
         context["famplex_context"] = famplex_by_evidence.get(
             (entry["matches_hash"], entry["source_hash"])
         )
+    context["site_context"] = entry.get("site_context")
     result = curate(client, entry["statement"], entry["evidence_text"], **context)
     decision = result["decision"]
     prediction = {

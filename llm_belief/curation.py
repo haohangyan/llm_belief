@@ -142,6 +142,22 @@ def statement_specific_instruction(statement):
     return meanings.get(statement_type)
 
 
+def get_site_context(statement, evidence):
+    """Return structured site metadata attached to one evidence record."""
+    residue = getattr(statement, "residue", None)
+    position = getattr(statement, "position", None)
+    sequence = (evidence.annotations or {}).get("SEQUENCE")
+    agents = statement.agent_list()
+    target = agents[1] if len(agents) > 1 else None
+    if not residue or not position or not target or not sequence:
+        return None
+    return (
+        f"Target: {target.name}\n"
+        f"Curated modification site: {residue}{position}\n"
+        f"Local sequence: {sequence}"
+    )
+
+
 def build_prompt(
     statement,
     evidence_text,
@@ -149,6 +165,7 @@ def build_prompt(
     uniprot_context=None,
     mesh_terms=None,
     famplex_context=None,
+    site_context=None,
 ):
     """Build the Gemma curation prompt."""
     abstract_context = f"Abstract:\n{abstract}" if abstract else ""
@@ -171,6 +188,11 @@ def build_prompt(
     target_section = (
         f"TARGET MEANING\n{target_meaning}" if target_meaning else ""
     )
+    evidence = (
+        f"{evidence_text}\n{site_context}"
+        if site_context
+        else evidence_text
+    )
     return f"""{CURATION_INSTRUCTIONS}
 
 {supporting_context}
@@ -181,7 +203,7 @@ STATEMENT
 {target_section}
 
 EVIDENCE
-{evidence_text}"""
+{evidence}"""
 
 
 def curate(
@@ -192,6 +214,7 @@ def curate(
     uniprot_context=None,
     mesh_terms=None,
     famplex_context=None,
+    site_context=None,
 ):
     """Run one AI curation and return its structured decision."""
     prompt = build_prompt(
@@ -201,6 +224,7 @@ def curate(
         uniprot_context,
         mesh_terms,
         famplex_context,
+        site_context,
     )
     result, metadata = client.complete_json(
         [{"role": "user", "content": prompt}],
