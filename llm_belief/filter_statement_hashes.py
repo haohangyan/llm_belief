@@ -18,6 +18,7 @@ FILTER_FILENAMES = {
     "gene": "gene_stmt_hashes.pkl",
     "famplex": "famplex_stmt_hashes.pkl",
     "chemical-gene": "chemical_gene_stmt_hashes.pkl",
+    "signor-chemical-gene": "signor_chemical_gene_stmt_hashes.pkl",
 }
 
 
@@ -29,6 +30,11 @@ def statement_has_chemical_gene(statement):
         if agent is not None
     }
     return "CHEBI" in namespaces and bool({"HGNC", "FPLX"} & namespaces)
+
+
+def statement_has_source(statement, source_api):
+    """Return whether a statement has evidence from the given source."""
+    return any(evidence.source_api == source_api for evidence in statement.evidence)
 
 
 def statement_is_gene_only(statement, specific_only):
@@ -64,6 +70,9 @@ def build_statement_hashes(
         raise ValueError(f"Unknown filters: {', '.join(sorted(unknown))}")
 
     hash_sets = {name: set() for name in filters}
+    needs_chemical = bool(
+        {"chemical-gene", "signor-chemical-gene"} & hash_sets.keys()
+    )
 
     csv.field_size_limit(sys.maxsize)
     with gzip.open(
@@ -91,11 +100,19 @@ def build_statement_hashes(
                 and statement_is_gene_only(statement, specific_only=False)
             ):
                 hash_sets["famplex"].add(statement_hash)
-            if (
-                "chemical-gene" in hash_sets
-                and statement_has_chemical_gene(statement)
-            ):
+            chemical_gene = (
+                statement_has_chemical_gene(statement)
+                if needs_chemical
+                else False
+            )
+            if "chemical-gene" in hash_sets and chemical_gene:
                 hash_sets["chemical-gene"].add(statement_hash)
+            if (
+                "signor-chemical-gene" in hash_sets
+                and chemical_gene
+                and statement_has_source(statement, "signor")
+            ):
+                hash_sets["signor-chemical-gene"].add(statement_hash)
             if row_number % 100_000 == 0:
                 rows.set_postfix(
                     **{
