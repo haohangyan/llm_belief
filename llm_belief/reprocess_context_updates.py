@@ -33,26 +33,34 @@ OUTPUT_PREFIX = "results_zz_context_updates"
 
 def load_candidate_hashes(database):
     """Load statement hashes whose old errors could change."""
+    print("[1/3] scanning old SQLite judgments", flush=True)
     uri = f"file:{Path(database)}?mode=ro"
     site_hashes = set()
     product_hashes = set()
     categories = PRODUCT_ERROR_CATEGORIES | {"mod_site"}
     placeholders = ",".join("?" for _ in categories)
-    with sqlite3.connect(uri, uri=True) as connection:
-        rows = connection.execute(
-            f"""
-            SELECT DISTINCT statement_hash, error_category
-            FROM {TABLE}
-            WHERE judgment = 'incorrect'
-              AND error_category IN ({placeholders})
-            """,
-            tuple(sorted(categories)),
-        )
-        for statement_hash, error_category in rows:
-            if error_category == "mod_site":
-                site_hashes.add(statement_hash)
-            else:
-                product_hashes.add(statement_hash)
+    with (
+        sqlite3.connect(uri, uri=True) as connection,
+        tqdm(desc="Scanning SQLite", unit="step") as progress,
+    ):
+        connection.set_progress_handler(lambda: progress.update() or 0, 1_000_000)
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT DISTINCT statement_hash, error_category
+                FROM {TABLE}
+                WHERE judgment = 'incorrect'
+                  AND error_category IN ({placeholders})
+                """,
+                tuple(sorted(categories)),
+            )
+            for statement_hash, error_category in rows:
+                if error_category == "mod_site":
+                    site_hashes.add(statement_hash)
+                else:
+                    product_hashes.add(statement_hash)
+        finally:
+            connection.set_progress_handler(None, 0)
     print(f"[select] site_candidate_statements={len(site_hashes):,}")
     print(f"[select] product_candidate_statements={len(product_hashes):,}")
     return site_hashes, product_hashes
@@ -62,6 +70,7 @@ def load_entries(database, processed_statements, context_batch_size=1_000):
     """Find only old incorrect evidence affected by the two context changes."""
     site_hashes, product_hashes = load_candidate_hashes(database)
     candidate_hashes = site_hashes | product_hashes
+    print("[2/3] scanning processed statements and UniProt context", flush=True)
 
     if not PMCID_TO_PMID_PATH.is_file():
         raise FileNotFoundError(
@@ -214,7 +223,7 @@ def main():
         args.context_batch_size,
     )
     if args.dry_run:
-        print("[done] dry run; no model calls or files written")
+        print("[3/3] dry run complete; no model calls or files written")
         return
     if not evidence_count:
         print("[done] no affected evidence found")
@@ -231,6 +240,7 @@ def main():
     for output in existing_outputs:
         output.unlink()
 
+    print("[3/3] sending selected evidence to the model", flush=True)
     run(
         entries_by_pmid,
         evidence_count,
