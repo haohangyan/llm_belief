@@ -3,8 +3,8 @@
 import argparse
 import csv
 import gzip
+import json
 import pickle
-import sqlite3
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -13,7 +13,6 @@ from indra.statements import Phosphorylation, stmt_from_json
 from indra_db.readonly_dumping.util import clean_json_loads
 from tqdm import tqdm
 
-from llm_belief.build_curation_database import TABLE
 from llm_belief.context import (
     _candidate_genes,
     load_processed_product_genes,
@@ -28,47 +27,84 @@ from llm_belief.process_gene_statements import (
 
 
 PRODUCT_ERROR_CATEGORIES = {"entity_boundaries", "grounding", "no_relation"}
+TARGET_ERROR_CATEGORIES = PRODUCT_ERROR_CATEGORIES | {"mod_site"}
 OUTPUT_PREFIX = "results_zz_context_updates"
 
 
-def load_candidate_hashes(database):
-    """Load statement hashes whose old errors could change."""
-    print("[1/3] scanning old SQLite judgments", flush=True)
-    uri = f"file:{Path(database)}?mode=ro"
-    site_hashes = set()
-    product_hashes = set()
-    categories = PRODUCT_ERROR_CATEGORIES | {"mod_site"}
-    placeholders = ",".join("?" for _ in categories)
-    with (
-        sqlite3.connect(uri, uri=True) as connection,
-        tqdm(desc="Scanning SQLite", unit="step") as progress,
-    ):
-        connection.set_progress_handler(lambda: progress.update() or 0, 1_000_000)
-        try:
-            rows = connection.execute(
-                f"""
-                SELECT DISTINCT statement_hash, error_category
-                FROM {TABLE}
-                WHERE judgment = 'incorrect'
-                  AND error_category IN ({placeholders})
-                """,
-                tuple(sorted(categories)),
-            )
-            for statement_hash, error_category in rows:
-                if error_category == "mod_site":
-                    site_hashes.add(statement_hash)
-                else:
-                    product_hashes.add(statement_hash)
-        finally:
-            connection.set_progress_handler(None, 0)
+def load_candidate_errors(results_directory):
+    """Load the latest relevant errors from the original result files."""
+    print("[1/3] reading old JSONL results", flush=True)
+    result_files = sorted(
+        path
+        for path in Path(results_directory).glob("results_*.jsonl")
+        if not path.name.startswith(f"{OUTPUT_PREFIX}_")
+    )
+    if not result_files:
+        raise FileNotFoundError(
+            f"No original results_*.jsonl files found in {results_directory}"
+        )
+
+    candidate_errors = {}
+    total_bytes = sum(path.stat().st_size for path in result_files)
+    with tqdm(
+        total=total_bytes,
+        desc="Reading old results",
+        unit="B",
+        unit_scale=True,
+    ) as progress:
+        for path in result_files:
+            with path.open("rb") as file:
+                for line_number, line in enumerate(file, 1):
+                    progress.update(len(line))
+                    if not line.strip():
+                        continue
+                    try:
+                        result = json.loads(line)
+                        statement_hash = int(result["statement_hash"])
+                        source_hash = int(result["source_hash"])
+                        judgment = result["judgment"]
+                    except (
+                        json.JSONDecodeError,
+                        KeyError,
+                        TypeError,
+                        ValueError,
+                    ) as error:
+                        raise ValueError(f"{path}:{line_number}: {error}") from error
+
+                    errors = candidate_errors.get(statement_hash)
+                    error_category = result.get("error_category")
+                    if (
+                        judgment == "incorrect"
+                        and error_category in TARGET_ERROR_CATEGORIES
+                    ):
+                        candidate_errors.setdefault(statement_hash, {})[
+                            source_hash
+                        ] = error_category
+                    elif errors is not None:
+                        errors.pop(source_hash, None)
+                        if not errors:
+                            candidate_errors.pop(statement_hash)
+
+    site_hashes = {
+        statement_hash
+        for statement_hash, errors in candidate_errors.items()
+        if "mod_site" in errors.values()
+    }
+    product_hashes = {
+        statement_hash
+        for statement_hash, errors in candidate_errors.items()
+        if PRODUCT_ERROR_CATEGORIES.intersection(errors.values())
+    }
     print(f"[select] site_candidate_statements={len(site_hashes):,}")
     print(f"[select] product_candidate_statements={len(product_hashes):,}")
-    return site_hashes, product_hashes
+    return candidate_errors, site_hashes, product_hashes
 
 
-def load_entries(database, processed_statements, context_batch_size=1_000):
+def load_entries(results_directory, processed_statements, context_batch_size=1_000):
     """Find only old incorrect evidence affected by the two context changes."""
-    site_hashes, product_hashes = load_candidate_hashes(database)
+    candidate_errors, site_hashes, product_hashes = load_candidate_errors(
+        results_directory
+    )
     candidate_hashes = site_hashes | product_hashes
     print("[2/3] scanning processed statements and UniProt context", flush=True)
 
@@ -88,9 +124,6 @@ def load_entries(database, processed_statements, context_batch_size=1_000):
     matched_statements = 0
     batch = []
 
-    uri = f"file:{Path(database)}?mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
-
     def process_batch():
         nonlocal site_evidence_count, product_evidence_count
         product_statements = [
@@ -108,14 +141,7 @@ def load_entries(database, processed_statements, context_batch_size=1_000):
         )
 
         for statement_hash, statement in batch:
-            old_errors = dict(connection.execute(
-                f"""
-                SELECT source_hash, error_category
-                FROM {TABLE}
-                WHERE statement_hash = ? AND judgment = 'incorrect'
-                """,
-                (statement_hash,),
-            ))
+            old_errors = candidate_errors[statement_hash]
             has_products = bool(products_by_hash.get(statement_hash))
             for evidence in statement.evidence:
                 if not evidence.text:
@@ -178,7 +204,6 @@ def load_entries(database, processed_statements, context_batch_size=1_000):
                 process_batch()
     if batch:
         process_batch()
-    connection.close()
 
     product_percent = (
         100 * len(processed_product_genes) / len(candidate_genes)
@@ -198,7 +223,6 @@ def load_entries(database, processed_statements, context_batch_size=1_000):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("database", type=Path)
     parser.add_argument("results_directory", type=Path)
     parser.add_argument(
         "--processed-statements",
@@ -213,12 +237,23 @@ def main():
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    if not args.database.is_file():
-        raise FileNotFoundError(args.database)
+    if not args.results_directory.is_dir():
+        raise FileNotFoundError(args.results_directory)
     if not args.processed_statements.is_file():
         raise FileNotFoundError(args.processed_statements)
+
+    existing_outputs = sorted(
+        args.results_directory.glob(f"{OUTPUT_PREFIX}_*.jsonl")
+    )
+    if not args.dry_run:
+        if existing_outputs and not args.overwrite:
+            raise FileExistsError(
+                f"{existing_outputs[0]} already exists; "
+                "use --overwrite to replace it"
+            )
+
     entries_by_pmid, evidence_count = load_entries(
-        args.database,
+        args.results_directory,
         args.processed_statements,
         args.context_batch_size,
     )
@@ -229,14 +264,6 @@ def main():
         print("[done] no affected evidence found")
         return
 
-    args.results_directory.mkdir(parents=True, exist_ok=True)
-    existing_outputs = sorted(
-        args.results_directory.glob(f"{OUTPUT_PREFIX}_*.jsonl")
-    )
-    if existing_outputs and not args.overwrite:
-        raise FileExistsError(
-            f"{existing_outputs[0]} already exists; use --overwrite to replace it"
-        )
     for output in existing_outputs:
         output.unlink()
 
