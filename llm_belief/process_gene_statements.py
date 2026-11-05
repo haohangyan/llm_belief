@@ -227,6 +227,8 @@ def run(
     chunk_size,
     servers,
     include_famplex_context,
+    run_directory=None,
+    output_prefix="results",
 ):
     clients = [
         LLMClient(
@@ -241,8 +243,10 @@ def run(
     finished = 0
     failed = 0
     started = time.perf_counter()
-    run_directory = RESULTS_DIRECTORY / time.strftime("%Y%m%d_%H%M%S")
-    run_directory.mkdir(parents=True)
+    run_directory = Path(run_directory) if run_directory else (
+        RESULTS_DIRECTORY / time.strftime("%Y%m%d_%H%M%S")
+    )
+    run_directory.mkdir(parents=True, exist_ok=True)
     output_file = None
 
     try:
@@ -294,7 +298,9 @@ def run(
                         if output_file:
                             output_file.close()
                         part = finished // RESULTS_PER_FILE + 1
-                        output_path = run_directory / f"results_{part:04d}.jsonl"
+                        output_path = (
+                            run_directory / f"{output_prefix}_{part:04d}.jsonl"
+                        )
                         output_file = output_path.open(
                             "w", encoding="utf-8", buffering=1024 * 1024
                         )
@@ -323,6 +329,7 @@ def run(
             output_file.close()
 
     print(f"[done] output={run_directory}")
+    return run_directory
 
 
 def main():

@@ -282,6 +282,24 @@ def load_uniprot_contexts(statements):
     }
 
 
+def load_processed_product_genes(statements):
+    """Return processed-product genes for each statement hash."""
+    genes_by_hash = {
+        statement.get_hash(): _candidate_genes(statement) for statement in statements
+    }
+    entries = _load_uniprot_entries()
+    genes = {gene for names in genes_by_hash.values() for gene in names}
+    _add_missing_uniprot(genes, entries)
+    return {
+        statement_hash: {
+            gene: entries[gene]["processed_products"]
+            for gene in statement_genes
+            if entries.get(gene, {}).get("processed_products")
+        }
+        for statement_hash, statement_genes in genes_by_hash.items()
+    }
+
+
 def get_uniprot_context(statement):
     """Return UniProt context for one statement."""
     return load_uniprot_contexts([statement]).get(statement.get_hash())
