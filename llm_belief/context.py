@@ -259,7 +259,17 @@ def _format_uniprot_context(genes, entries):
             f"  Function: {function}"
         )
 
-    return f"""ENTITY NORMALIZATION CONTEXT (UniProt; optional)
+    product_mapping = ""
+    if any(entries.get(gene, {}).get("processed_products") for gene in genes):
+        product_mapping = """INDRA PROCESSED-PRODUCT MAPPING (authoritative for entity matching)
+When an entry below lists processed products of a gene-level statement agent,
+an evidence mention of one of those products or its unambiguous abbreviation
+counts as a mention of that agent. This mapping establishes entity identity
+only; it does not establish the relation.
+
+"""
+
+    return f"""{product_mapping}ENTITY NORMALIZATION CONTEXT (UniProt; optional)
 Queried gene tokens from statement: {', '.join(genes)}
 For each token, we attached ONLY the first UniProt search result (query: gene:<token>, limit=1).
 This may or may not refer to the exact mentioned entity in the evidence.
