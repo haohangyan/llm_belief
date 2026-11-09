@@ -57,6 +57,11 @@ RULES
   effect on B does not support either activation or inhibition; use the
   negative_result error category.
 - Supporting context is only for resolving ambiguity, not for inferring a relation.
+- For INDRA gene-level agents, a relation to a processed product or peptide
+  identified in supporting context is the same relation to that agent. In
+  particular, physical binding to such a product supports a Complex statement
+  involving the corresponding gene-level agent; do not require the full-length
+  precursor protein. This mapping supplies entity identity, not a relation.
 - Use UniProt context to validate each entity's biological sense, not only its
   name or abbreviation. If the same text refers to a different biological
   entity, reject it with the grounding error category.

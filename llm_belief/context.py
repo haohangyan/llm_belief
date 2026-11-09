@@ -259,8 +259,11 @@ def _format_uniprot_context(genes, entries):
             f"  Function: {function}"
         )
 
+    has_processed_products = any(
+        entries.get(gene, {}).get("processed_products") for gene in genes
+    )
     product_mapping = ""
-    if any(entries.get(gene, {}).get("processed_products") for gene in genes):
+    if has_processed_products:
         product_mapping = """INDRA PROCESSED-PRODUCT MAPPING (authoritative for entity matching)
 When an entry below lists processed products of a gene-level statement agent,
 an evidence mention of one of those products or its unambiguous abbreviation
@@ -268,12 +271,19 @@ counts as a mention of that agent. This mapping establishes entity identity
 only; it does not establish the relation.
 
 """
+    context_guidance = (
+        "Treat the processed-product mappings below as authoritative for "
+        "INDRA entity matching. Other UniProt fields are tentative context."
+        if has_processed_products
+        else "This may not refer to the exact entity mentioned in the evidence; "
+        "use it only as tentative grounding context."
+    )
 
-    return f"""{product_mapping}ENTITY NORMALIZATION CONTEXT (UniProt; optional)
+    return f"""{product_mapping}ENTITY NORMALIZATION CONTEXT (UniProt)
 Queried gene tokens from statement: {', '.join(genes)}
 For each token, we attached ONLY the first UniProt search result (query: gene:<token>, limit=1).
-This may or may not refer to the exact mentioned entity in the evidence.
-Use this ONLY as tentative grounding/disambiguation context, and do NOT infer relations not present in the evidence.
+{context_guidance}
+Do not infer relations not present in the evidence.
 
 {chr(10).join(lines)}"""
 
