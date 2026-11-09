@@ -148,8 +148,8 @@ def get_site_context(statement, evidence):
     if not residue or not position or not target or not sequence:
         return None
     return (
-        f"Target: {target.name}\n"
-        f"Curated modification site: {residue}{position}\n"
+        f"Source-provided site mapping for this evidence: "
+        f"{target.name} {residue}{position}\n"
         f"Local sequence: {sequence}"
     )
 
