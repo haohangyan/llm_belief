@@ -21,7 +21,10 @@ from llm_belief.context import (
     load_mesh_terms,
     load_uniprot_contexts,
 )
-from llm_belief.curation import curate, get_site_context
+from llm_belief.curation import (
+    curate,
+    get_site_context,
+)
 from llm_belief.llm import LLMClient
 from llm_belief.locations import PMCID_TO_PMID_PATH
 from llm_belief.pmcid_map import normalize_pmcid
@@ -150,6 +153,7 @@ def load_entries(statement_hashes_path, completed_keys=None):
                             "source_hash": source_hash,
                             "statement": statement,
                             "evidence_text": evidence.text,
+                            "source_api": evidence.source_api,
                             "site_context": get_site_context(
                                 statement, evidence
                             ),
@@ -203,6 +207,7 @@ def process_one(
             else None
         ),
         site_context=entry["site_context"],
+        source_api=entry["source_api"],
     )
     judgment = {
         "accepted": "correct",

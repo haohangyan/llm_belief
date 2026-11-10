@@ -1,5 +1,7 @@
 """Curate whether an INDRA statement is supported by its evidence."""
 
+from indra.sources import SOURCE_INFO
+
 
 ERROR_CATEGORIES = (
     "entity_boundaries",
@@ -14,6 +16,14 @@ ERROR_CATEGORIES = (
     "negative_result",
     "other",
 )
+
+
+def database_source_context(source_api):
+    """Identify evidence supplied by a curated database source."""
+    if SOURCE_INFO.get(source_api, {}).get("type") != "database":
+        return None
+    return "Evidence source type: curated database."
+
 
 CURATION_SCHEMA = {
     "type": "object",
@@ -57,6 +67,9 @@ RULES
   effect on B does not support either activation or inhibition; use the
   negative_result error category.
 - Supporting context is only for resolving ambiguity, not for inferring a relation.
+- Curated database evidence may refer to a table or figure whose detailed result
+  is not included in the visible text. In that case, prefer accepted unless the
+  visible text clearly contradicts the statement.
 - For INDRA gene-level agents, a relation to a processed product or peptide
   identified in supporting context is the same relation to that agent. In
   particular, physical binding to such a product supports a Complex statement
@@ -167,17 +180,20 @@ def build_prompt(
     mesh_terms=None,
     famplex_context=None,
     site_context=None,
+    source_api=None,
 ):
     """Build the Gemma curation prompt."""
     abstract_context = f"Abstract:\n{abstract}" if abstract else ""
     entity_context = uniprot_context or ""
     family_context = famplex_context or ""
     mesh_context = f"MeSH terms: {', '.join(mesh_terms)}" if mesh_terms else ""
+    source_context = database_source_context(source_api) or ""
     context_parts = [
         abstract_context,
         mesh_context,
         entity_context,
         family_context,
+        source_context,
     ]
     context_parts = [part for part in context_parts if part]
     supporting_context = (
@@ -216,6 +232,7 @@ def curate(
     mesh_terms=None,
     famplex_context=None,
     site_context=None,
+    source_api=None,
 ):
     """Run one AI curation and return its structured decision."""
     prompt = build_prompt(
@@ -226,6 +243,7 @@ def curate(
         mesh_terms,
         famplex_context,
         site_context,
+        source_api,
     )
     result, metadata = client.complete_json(
         [{"role": "user", "content": prompt}],

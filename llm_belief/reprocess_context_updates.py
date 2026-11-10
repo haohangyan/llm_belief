@@ -174,6 +174,7 @@ def load_entries(results_directory, processed_statements, context_batch_size=1_0
                     "source_hash": source_hash,
                     "statement": statement,
                     "evidence_text": evidence.text,
+                    "source_api": evidence.source_api,
                     "site_context": site_context,
                     "pmid": pmid,
                 })

@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import gzip
 import json
 import random
 import time
@@ -9,6 +10,8 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
 from pathlib import Path
+
+from indra.statements import stmt_from_json
 
 from llm_belief.abstract_cache import get_abstracts
 from llm_belief.curation import (
@@ -86,6 +89,52 @@ def load_entries(gold):
     if missing:
         raise RuntimeError(f"Could not find {len(missing)} curated pairs in the corpus")
     return [found[pair] for pair in sorted(found)]
+
+
+def load_benchmark_file(path):
+    """Load a standalone JSONL benchmark without the full corpus."""
+    opener = gzip.open if path.suffix == ".gz" else open
+    entries = []
+    gold = {}
+    gold_tags = {}
+    with opener(path, "rt", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            statement = stmt_from_json(row["statement_json"])
+            evidence = statement.evidence[0] if statement.evidence else None
+            pair = (int(row["statement_hash"]), int(row["source_hash"]))
+            if pair in gold:
+                raise ValueError(f"{path}:{line_number}: duplicate pair {pair}")
+            label = row["label"]
+            if label not in {"correct", "incorrect"}:
+                raise ValueError(
+                    f"{path}:{line_number}: invalid label {label!r}"
+                )
+            gold[pair] = label
+            gold_tags[pair] = row.get("gold_tags") or [
+                "correct" if label == "correct" else "other"
+            ]
+            entries.append({
+                "matches_hash": pair[0],
+                "source_hash": pair[1],
+                "statement": statement,
+                "evidence_text": row.get("evidence_text")
+                or (evidence.text if evidence else None),
+                "site_context": (
+                    get_site_context(statement, evidence) if evidence else None
+                ),
+                "source_api": row.get("source_api")
+                or (evidence.source_api if evidence else None),
+                "pmid": row.get("pmid")
+                or (
+                    evidence.pmid or evidence.text_refs.get("PMID")
+                    if evidence
+                    else None
+                ),
+            })
+    return entries, gold, gold_tags
 
 
 def statement_has_famplex(statement):
@@ -277,7 +326,13 @@ def run_one(
             (entry["matches_hash"], entry["source_hash"])
         )
     context["site_context"] = entry.get("site_context")
-    result = curate(client, entry["statement"], entry["evidence_text"], **context)
+    context["source_api"] = entry["source_api"]
+    result = curate(
+        client,
+        entry["statement"],
+        entry["evidence_text"],
+        **context,
+    )
     decision = result["decision"]
     prediction = {
         "accepted": "correct",
@@ -300,6 +355,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model")
     parser.add_argument("--provider", choices=["local", "openai"], default="local")
+    parser.add_argument(
+        "--base-url",
+        help="OpenAI-compatible endpoint used with --provider local",
+    )
+    parser.add_argument(
+        "--benchmark-file",
+        type=Path,
+        help="Standalone JSONL benchmark exported by this package",
+    )
     parser.add_argument(
         "--context",
         nargs="+",
@@ -352,22 +416,34 @@ def main():
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[setup] loading gold curations from {CURATIONS_PATH}", flush=True)
     phase_started = time.perf_counter()
-    gold, gold_tags = load_gold(
-        None if args.famplex_only else args.limit or None,
-        args.seed,
-        include_tags=True,
-    )
-    print(
-        f"[setup] loaded {len(gold)} gold pairs "
-        f"in {time.perf_counter() - phase_started:.1f}s",
-        flush=True,
-    )
+    if args.benchmark_file:
+        print(
+            f"[setup] loading standalone benchmark from {args.benchmark_file}",
+            flush=True,
+        )
+        entries, gold, gold_tags = load_benchmark_file(args.benchmark_file)
+        if args.limit and args.limit < len(entries):
+            entries = random.Random(args.seed).sample(entries, args.limit)
+            selected_pairs = {
+                (entry["matches_hash"], entry["source_hash"])
+                for entry in entries
+            }
+            gold = {pair: gold[pair] for pair in selected_pairs}
+            gold_tags = {pair: gold_tags[pair] for pair in selected_pairs}
+    else:
+        print(f"[setup] loading gold curations from {CURATIONS_PATH}", flush=True)
+        gold, gold_tags = load_gold(
+            None if args.famplex_only else args.limit or None,
+            args.seed,
+            include_tags=True,
+        )
+        print(
+            f"[setup] loading and matching corpus from {CORPUS_PICKLE_PATH}",
+            flush=True,
+        )
+        entries = load_entries(gold)
 
-    print(f"[setup] loading and matching corpus from {CORPUS_PICKLE_PATH}", flush=True)
-    phase_started = time.perf_counter()
-    entries = load_entries(gold)
     if args.famplex_only:
         entries = [
             entry
@@ -384,7 +460,7 @@ def main():
         gold_tags = {pair: gold_tags[pair] for pair in selected_pairs}
         print(f"[setup] selected {len(entries)} FamPlex gold pairs", flush=True)
     print(
-        f"[setup] matched {len(entries)} corpus entries "
+        f"[setup] loaded {len(entries)} benchmark entries "
         f"in {time.perf_counter() - phase_started:.1f}s",
         flush=True,
     )
@@ -482,7 +558,12 @@ def main():
     client = (
         OpenAILLMClient(model)
         if args.provider == "openai"
-        else LLMClient(model, args.max_tokens, args.reasoning_effort)
+        else LLMClient(
+            model,
+            args.max_tokens,
+            args.reasoning_effort,
+            base_url=args.base_url or "http://127.0.0.1:8001/v1",
+        )
     )
     print(
         f"[run] starting model requests with {args.workers} workers",
@@ -542,9 +623,15 @@ def main():
     summary_output = output.with_name(f"{output.stem}_summary.json")
     summary_output.write_text(json.dumps(summary, indent=2) + "\n")
     category_output = write_category_tsv(summary, output)
+    accuracy = (
+        f"{summary['accuracy']:.4f}"
+        if summary["accuracy"] is not None
+        else "n/a"
+    )
+    f1 = f"{summary['f1']:.4f}" if summary["f1"] is not None else "n/a"
     print(
-        f"accuracy={summary['accuracy']:.4f} "
-        f"f1={summary['f1']:.4f} "
+        f"accuracy={accuracy} "
+        f"f1={f1} "
         f"disagreements={summary['disagreements']} "
         f"elapsed={summary['elapsed']}"
     )

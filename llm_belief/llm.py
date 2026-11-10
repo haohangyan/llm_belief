@@ -4,7 +4,7 @@ import json
 import logging
 import os
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -21,13 +21,20 @@ class LLMClient:
         max_tokens=1024,
         reasoning_effort=None,
         base_url="http://127.0.0.1:8001/v1",
+        api_key=None,
     ):
         self.model = model
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
+        if api_key is None:
+            api_key = (
+                os.getenv("GROQ_API_KEY")
+                if "groq.com" in base_url
+                else os.getenv("OPENAI_API_KEY")
+            )
         self._client = OpenAI(
             base_url=base_url,
-            api_key="not-needed",
+            api_key=api_key or "not-needed",
         )
 
     def complete(self, messages, temperature=0.0, max_tokens=None):
@@ -44,25 +51,33 @@ class LLMClient:
 
     def complete_json(self, messages, name, schema):
         for attempt in range(2):
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=[dict(message) for message in messages],
-                temperature=0.0,
-                max_tokens=self.max_tokens,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": name,
-                        "schema": schema,
-                        "strict": True,
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[dict(message) for message in messages],
+                    temperature=0.0,
+                    max_tokens=self.max_tokens,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": name,
+                            "schema": schema,
+                            "strict": True,
+                        },
                     },
-                },
-                extra_body=(
-                    {"reasoning_effort": self.reasoning_effort}
-                    if self.reasoning_effort
-                    else None
-                ),
-            )
+                    extra_body=(
+                        {"reasoning_effort": self.reasoning_effort}
+                        if self.reasoning_effort
+                        else None
+                    ),
+                )
+            except BadRequestError as error:
+                body = error.body or {}
+                details = body.get("error", body)
+                if details.get("code") != "json_validate_failed" or attempt:
+                    raise
+                print("JSON validation failed; retrying once", flush=True)
+                continue
             content = response.choices[0].message.content
             if content:
                 return json.loads(content), {}
