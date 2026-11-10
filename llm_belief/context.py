@@ -1,4 +1,4 @@
-"""Optional MeSH, UniProt, and FamPlex context for curation."""
+"""Optional entity and publication context for curation."""
 
 import json
 import re
@@ -15,6 +15,86 @@ from llm_belief.locations import (
     INDRA_DB_LITE_PATH,
     UNIPROT_CACHE_PATH,
 )
+
+
+def statement_has_chemical(statement):
+    """Return whether a direct statement agent has ChEBI grounding."""
+    return any(
+        agent is not None and agent.db_refs.get("CHEBI")
+        for agent in statement.agent_list()
+    )
+
+
+def get_chemical_context(statement):
+    """Return local ChEBI-based entity context for chemical agents."""
+    from indra.databases import drugbank_client
+
+    try:
+        from indra.databases import chebi_client
+    except ImportError:
+        chebi_client = None
+
+    lines = []
+    seen = set()
+    for agent in statement.agent_list():
+        if agent is None or not agent.db_refs.get("CHEBI"):
+            continue
+        chebi_id = agent.db_refs["CHEBI"]
+        chebi_id = (
+            chebi_id if chebi_id.startswith("CHEBI:") else f"CHEBI:{chebi_id}"
+        )
+        if chebi_id in seen:
+            continue
+        seen.add(chebi_id)
+
+        lines.append(f"- Statement agent: {agent.name} [{chebi_id}]")
+        chebi_name = (
+            chebi_client.get_chebi_name_from_id(chebi_id)
+            if chebi_client
+            else None
+        )
+        if chebi_name and chebi_name.casefold() != agent.name.casefold():
+            lines.append(f"  ChEBI name: {chebi_name}")
+
+        drugbank_id = agent.db_refs.get("DRUGBANK")
+        candidate_names = list(
+            dict.fromkeys(
+                name
+                for name in (
+                    agent.db_refs.get("TEXT"),
+                    agent.db_refs.get("TEXT_NORM"),
+                    drugbank_client.get_drugbank_name(drugbank_id)
+                    if drugbank_id
+                    else None,
+                )
+                if name and name.casefold() != agent.name.casefold()
+            )
+        )
+        if candidate_names:
+            lines.append(
+                "  Candidate names in the extraction/databases: "
+                + ", ".join(candidate_names)
+            )
+
+        identifiers = []
+        for namespace, identifier in (
+            ("PubChem", agent.db_refs.get("PUBCHEM")),
+            ("ChEMBL", agent.db_refs.get("CHEMBL")),
+            ("DrugBank", drugbank_id),
+        ):
+            if identifier:
+                identifiers.append(f"{namespace}:{identifier}")
+        if identifiers:
+            lines.append("  Cross-references: " + ", ".join(identifiers))
+
+    if not lines:
+        return None
+    return """CHEMICAL ENTITY CONTEXT
+These are candidate entity mappings, not evidence for the relation. Use them
+to recognize chemical names, but reject grounding when the surrounding text
+clearly uses the same token for a different biological entity.
+
+""" + "\n".join(lines)
 
 
 def _mesh_id(mesh_num, is_concept):

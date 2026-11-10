@@ -2,6 +2,8 @@
 
 from indra.sources import SOURCE_INFO
 
+from llm_belief.context import get_chemical_context, statement_has_chemical
+
 
 ERROR_CATEGORIES = (
     "entity_boundaries",
@@ -104,6 +106,29 @@ Return only this JSON shape:
   "error_category": "category or null"
 }}"""
 
+CHEMICAL_CURATION_INSTRUCTIONS = """CHEMICAL STATEMENT RULES
+- Chemical name mappings in supporting context are candidates for entity
+  resolution, not proof. Accept an alias when it fits the surrounding text;
+  reject it as grounding when the text clearly denotes another entity.
+- For a non-protein target, Activation and Inhibition describe a positive or
+  negative causal effect on its amount, state, occurrence, severity, entry,
+  replication, or other relevant behavior; do not require protein activity.
+- Binding alone supports a Complex statement but does not by itself establish
+  Activation or Inhibition.
+- A parent compound, metabolite, salt, or molecular form is not automatically
+  interchangeable with another form unless the supplied mapping or evidence
+  supports that identity."""
+
+
+_PROTEIN_NAMESPACES = {"HGNC", "UP", "FPLX", "NXPFA", "IP", "PF"}
+
+
+def _is_protein_agent(agent):
+    return bool(
+        agent
+        and any(agent.db_refs.get(namespace) for namespace in _PROTEIN_NAMESPACES)
+    )
+
 
 def statement_specific_instruction(statement):
     statement_type = type(statement).__name__
@@ -114,24 +139,59 @@ def statement_specific_instruction(statement):
     subject = agents[0].name if len(agents) > 0 and agents[0] else "the subject"
     object_ = agents[1].name if len(agents) > 1 and agents[1] else "the object"
     members = ", ".join(agent.name for agent in agents if agent)
+    chemical_statement = (
+        not isinstance(statement, str) and statement_has_chemical(statement)
+    )
+    protein_target = len(agents) > 1 and _is_protein_agent(agents[1])
 
-    meanings = {
-        "Activation": (
+    if chemical_statement and not protein_target:
+        activation_meaning = (
+            f"{subject} has a positive causal effect on {object_}. For this "
+            "non-protein target, increased amount, production, occurrence, "
+            "severity, entry, replication, or other relevant behavior can "
+            "support Activation. Mere association does not."
+        )
+        inhibition_meaning = (
+            f"{subject} has a negative causal effect on {object_}. For this "
+            "non-protein target, suppression, reduced amount or occurrence, "
+            "blocked entry or replication, or reduced severity can support "
+            "Inhibition. Mere association does not."
+        )
+    else:
+        explicit_relation = (
+            f"An explicit assertion that {subject} activates {object_} supports "
+            "the relation even if a downstream amount change is also reported. "
+            if chemical_statement
+            else ""
+        )
+        activation_meaning = (
             f"{subject} -> {object_} functional activity (positive regulation). "
             f"Classify by the property of {object_} that changes, not by whether "
-            f"{subject} is active. Changes only to {object_} expression, abundance, "
+            f"{subject} is active. {explicit_relation}Changes only to {object_} "
+            "expression, abundance, "
             "protein or mRNA level, stability, or degradation are amount changes, "
             "not activity; reject them as act_vs_amt. Generic verbs such as "
             "'upregulates' do not establish activity by themselves."
-        ),
-        "Inhibition": (
+        )
+        explicit_relation = (
+            f"An explicit assertion that {subject} inhibits {object_} supports "
+            "the relation even if a downstream amount change is also reported. "
+            if chemical_statement
+            else ""
+        )
+        inhibition_meaning = (
             f"{subject} -> {object_} functional activity (negative regulation). "
             f"Classify by the property of {object_} that changes, not by whether "
-            f"{subject} is active. Changes only to {object_} expression, abundance, "
+            f"{subject} is active. {explicit_relation}Changes only to {object_} "
+            "expression, abundance, "
             "protein or mRNA level, stability, or degradation are amount changes, "
             "not activity; reject them as act_vs_amt. Generic verbs such as "
             "'downregulates' or 'suppresses' do not establish activity by themselves."
-        ),
+        )
+
+    meanings = {
+        "Activation": activation_meaning,
+        "Inhibition": inhibition_meaning,
         "IncreaseAmount": (
             f"{subject} -> {object_} amount, expression, production, or stability "
             f"(positive regulation). Classify by the property of {object_} that "
@@ -183,6 +243,14 @@ def build_prompt(
     source_api=None,
 ):
     """Build the Gemma curation prompt."""
+    chemical_statement = (
+        not isinstance(statement, str) and statement_has_chemical(statement)
+    )
+    instructions = CURATION_INSTRUCTIONS
+    chemical_context = ""
+    if chemical_statement:
+        instructions += f"\n\n{CHEMICAL_CURATION_INSTRUCTIONS}"
+        chemical_context = get_chemical_context(statement) or ""
     abstract_context = f"Abstract:\n{abstract}" if abstract else ""
     entity_context = uniprot_context or ""
     family_context = famplex_context or ""
@@ -191,6 +259,7 @@ def build_prompt(
     context_parts = [
         abstract_context,
         mesh_context,
+        chemical_context,
         entity_context,
         family_context,
         source_context,
@@ -210,7 +279,7 @@ def build_prompt(
         if site_context
         else evidence_text
     )
-    return f"""{CURATION_INSTRUCTIONS}
+    return f"""{instructions}
 
 {supporting_context}
 
