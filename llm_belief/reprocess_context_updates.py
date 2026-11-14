@@ -21,18 +21,17 @@ from llm_belief.curation import get_site_context
 from llm_belief.locations import PMCID_TO_PMID_PATH
 from llm_belief.process_gene_statements import (
     PROCESSED_STATEMENTS_PATH,
+    evidence_key,
     evidence_pmid,
     run,
 )
 
 
-PRODUCT_ERROR_CATEGORIES = {"entity_boundaries", "grounding", "no_relation"}
-TARGET_ERROR_CATEGORIES = PRODUCT_ERROR_CATEGORIES | {"mod_site"}
 OUTPUT_PREFIX = "results_zz_context_updates"
 
 
 def load_candidate_errors(results_directory):
-    """Load the latest relevant errors from the original result files."""
+    """Load site errors and statements containing any incorrect evidence."""
     print("[1/3] reading old JSONL results", flush=True)
     result_files = sorted(
         path
@@ -44,7 +43,10 @@ def load_candidate_errors(results_directory):
             f"No original results_*.jsonl files found in {results_directory}"
         )
 
-    candidate_errors = {}
+    incorrect_keys = set()
+    incorrect_hashes = set()
+    site_keys = set()
+    site_hashes = set()
     total_bytes = sum(path.stat().st_size for path in result_files)
     with tqdm(
         total=total_bytes,
@@ -71,41 +73,31 @@ def load_candidate_errors(results_directory):
                     ) as error:
                         raise ValueError(f"{path}:{line_number}: {error}") from error
 
-                    errors = candidate_errors.get(statement_hash)
                     error_category = result.get("error_category")
-                    if (
-                        judgment == "incorrect"
-                        and error_category in TARGET_ERROR_CATEGORIES
-                    ):
-                        candidate_errors.setdefault(statement_hash, {})[
-                            source_hash
-                        ] = error_category
-                    elif errors is not None:
-                        errors.pop(source_hash, None)
-                        if not errors:
-                            candidate_errors.pop(statement_hash)
+                    key = evidence_key(statement_hash, source_hash)
+                    if judgment == "incorrect":
+                        incorrect_keys.add(key)
+                        incorrect_hashes.add(statement_hash)
+                        if error_category == "mod_site":
+                            site_keys.add(key)
+                            site_hashes.add(statement_hash)
+                    else:
+                        incorrect_keys.discard(key)
+                        site_keys.discard(key)
 
-    site_hashes = {
-        statement_hash
-        for statement_hash, errors in candidate_errors.items()
-        if "mod_site" in errors.values()
-    }
-    product_hashes = {
-        statement_hash
-        for statement_hash, errors in candidate_errors.items()
-        if PRODUCT_ERROR_CATEGORIES.intersection(errors.values())
-    }
     print(f"[select] site_candidate_statements={len(site_hashes):,}")
-    print(f"[select] product_candidate_statements={len(product_hashes):,}")
-    return candidate_errors, site_hashes, product_hashes
+    print(
+        f"[select] incorrect_candidate_statements={len(incorrect_hashes):,}"
+    )
+    return site_keys, site_hashes, incorrect_keys, incorrect_hashes
 
 
 def load_entries(results_directory, processed_statements, context_batch_size=1_000):
-    """Find only old incorrect evidence affected by the two context changes."""
-    candidate_errors, site_hashes, product_hashes = load_candidate_errors(
-        results_directory
+    """Find old incorrect evidence affected by the two context changes."""
+    site_keys, site_hashes, incorrect_keys, incorrect_hashes = (
+        load_candidate_errors(results_directory)
     )
-    candidate_hashes = site_hashes | product_hashes
+    candidate_hashes = site_hashes | incorrect_hashes
     print("[2/3] scanning processed statements and UniProt context", flush=True)
 
     if not PMCID_TO_PMID_PATH.is_file():
@@ -129,7 +121,7 @@ def load_entries(results_directory, processed_statements, context_batch_size=1_0
         product_statements = [
             statement
             for statement_hash, statement in batch
-            if statement_hash in product_hashes
+            if statement_hash in incorrect_hashes
         ]
         for statement in product_statements:
             candidate_genes.update(_candidate_genes(statement))
@@ -141,24 +133,20 @@ def load_entries(results_directory, processed_statements, context_batch_size=1_0
         )
 
         for statement_hash, statement in batch:
-            old_errors = candidate_errors[statement_hash]
             has_products = bool(products_by_hash.get(statement_hash))
             for evidence in statement.evidence:
                 if not evidence.text:
                     continue
                 source_hash = evidence.get_source_hash()
-                error_category = old_errors.get(source_hash)
+                key = evidence_key(statement_hash, source_hash)
                 site_context = get_site_context(statement, evidence)
                 selected_for_site = (
                     statement_hash in site_hashes
-                    and error_category == "mod_site"
+                    and key in site_keys
                     and isinstance(statement, Phosphorylation)
                     and site_context is not None
                 )
-                selected_for_product = (
-                    has_products
-                    and error_category in PRODUCT_ERROR_CATEGORIES
-                )
+                selected_for_product = has_products and key in incorrect_keys
                 if not selected_for_site and not selected_for_product:
                     continue
 

@@ -90,9 +90,9 @@ def get_chemical_context(statement):
     if not lines:
         return None
     return """CHEMICAL ENTITY CONTEXT
-These are candidate entity mappings, not evidence for the relation. Use them
-to recognize chemical names, but reject grounding when the surrounding text
-clearly uses the same token for a different biological entity.
+These are candidate entity mappings, not proof of entity identity or evidence
+for the relation. First determine what the original extraction text means in
+the evidence. Reject grounding when that text denotes a different entity.
 
 """ + "\n".join(lines)
 

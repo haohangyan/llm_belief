@@ -107,9 +107,14 @@ Return only this JSON shape:
 }}"""
 
 CHEMICAL_CURATION_INSTRUCTIONS = """CHEMICAL STATEMENT RULES
-- Chemical name mappings in supporting context are candidates for entity
-  resolution, not proof. Accept an alias when it fits the surrounding text;
-  reject it as grounding when the text clearly denotes another entity.
+- Resolve the raw subject and object spans from the evidence before judging the
+  relation. Chemical mappings in supporting context are candidates, not proof.
+- Treat short names and abbreviations as ambiguous. If the evidence uses one for
+  a different entity, such as a protein, genotype, diet, or virus, reject it as
+  grounding; do not force it to match the candidate chemical name.
+- Reject as entity_boundaries when a subject or object span is only a generic
+  process or property, such as "formation", "expression", "synthesis", or
+  "activity", rather than a complete mention of the stated entity.
 - For a non-protein target, Activation and Inhibition describe a positive or
   negative causal effect on its amount, state, occurrence, severity, entry,
   replication, or other relevant behavior; do not require protein activity.
